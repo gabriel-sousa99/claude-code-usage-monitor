@@ -10,6 +10,7 @@ Projeto para Windows que monitora o consumo do Claude Code diretamente na barra 
 Este repositorio e um fork customizado do projeto original Claude Code Usage Monitor.
 
 Objetivos deste fork:
+
 - Interface totalmente em portugues do Brasil
 - Visual do widget ajustado (mais compacto e com estilo de capsula)
 - Customizacao visual diretamente no menu de contexto
@@ -18,16 +19,19 @@ Objetivos deste fork:
 ## O Que Foi Alterado Neste Fork
 
 1. Interface em pt-BR
+
 - Idioma portugues do Brasil adicionado a localizacao
 - Aplicacao configurada para usar pt-BR como idioma principal
 - Menus de customizacao traduzidos para portugues
 
 2. Design do widget
+
 - Altura ajustada para layout mais compacto
 - Painel arredondado com melhor contraste visual
 - Indicadores e textos refinados para leitura na barra de tarefas
 
 3. Menu de customizacao
+
 - Tamanho (px): Automatico, 320x38, 360x44, 400x50, 440x56
 - Cores: fundo, fonte e indicadores
 - Borda: 0px, 1px, 2px, 3px
@@ -36,6 +40,7 @@ Objetivos deste fork:
   - Margem: 0px, 2px, 4px
 
 4. Atualizacoes
+
 - Fluxo de verificacao automatica e manual de atualizacoes removido do menu
 
 ## Requisitos
@@ -68,12 +73,14 @@ target/release/claude-code-usage-monitor.exe
 ## Como Usar
 
 Depois de iniciar o app:
+
 - O widget aparece na barra de tarefas
 - O icone fica na bandeja do sistema
 - Clique esquerdo no icone: mostrar/ocultar widget
 - Clique direito no widget ou no icone: abrir menu
 
 No menu, voce pode:
+
 - Atualizar os dados manualmente
 - Ajustar a frequencia de atualizacao
 - Configurar a inicializacao com o Windows
@@ -106,6 +113,7 @@ Configuracoes persistidas em:
 Este projeto e open source.
 
 O app:
+
 - Le credenciais locais do Claude Code para autenticacao
 - Consulta endpoints da Anthropic para obter uso e limites
 - Nao envia credenciais para servidores de terceiros
