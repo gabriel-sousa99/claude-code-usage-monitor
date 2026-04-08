@@ -1,5 +1,5 @@
 ![Windows](https://img.shields.io/badge/plataforma-Windows-blue)
-[![Licenca: MIT](https://img.shields.io/badge/Licenca-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Licença: MIT](https://img.shields.io/badge/Licenca-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 # Claude Code Usage Monitor (Fork Customizado)
 
@@ -7,22 +7,22 @@ Projeto para Windows que monitora o consumo do Claude Code diretamente na barra 
 
 ## Sobre Este Fork
 
-Este repositorio e um fork customizado do projeto original Claude Code Usage Monitor.
+Este repositório é um fork customizado do projeto original Claude Code Usage Monitor.
 
 Objetivos deste fork:
 
-- Interface totalmente em portugues do Brasil
-- Visual do widget ajustado (mais compacto e com estilo de capsula)
-- Customizacao visual diretamente no menu de contexto
-- Remocao da funcionalidade de verificacao e acao de atualizacoes no menu
+- Interface totalmente em português do Brasil
+- Visual do widget ajustado (mais compacto e com estilo de cápsula)
+- Customização visual diretamente no menu de contexto
+- Remoção da funcionalidade de verificação e ação de atualizações no menu
 
 ## O Que Foi Alterado Neste Fork
 
 1. Interface em pt-BR
 
-- Idioma portugues do Brasil adicionado a localizacao
-- Aplicacao configurada para usar pt-BR como idioma principal
-- Menus de customizacao traduzidos para portugues
+- Idioma português do Brasil adicionado à localização
+- Aplicação configurada para usar pt-BR como idioma principal
+- Menus de customização traduzidos para português
 
 2. Design do widget
 
@@ -30,41 +30,41 @@ Objetivos deste fork:
 - Painel arredondado com melhor contraste visual
 - Indicadores e textos refinados para leitura na barra de tarefas
 
-3. Menu de customizacao
+3. Menu de customização
 
-- Tamanho (px): Automatico, 320x38, 360x44, 400x50, 440x56
+- Tamanho (px): Automático, 320x38, 360x44, 400x50, 440x56
 - Cores: fundo, fonte e indicadores
 - Borda: 0px, 1px, 2px, 3px
-- Espacamento:
+- Espaçamento:
   - Preenchimento: 0px, 4px, 8px
   - Margem: 0px, 2px, 4px
 
-4. Atualizacoes
+4. Atualizações
 
-- Fluxo de verificacao automatica e manual de atualizacoes removido do menu
+- Fluxo de verificação automática e manual de atualizações removido do menu
 
 ## Requisitos
 
 - Windows 10 ou Windows 11
 - Claude Code (CLI ou App) instalado e autenticado
 
-WSL tambem e suportado para leitura de credenciais, quando aplicavel.
+WSL também é suportado para leitura de credenciais, quando aplicável.
 
 ## Como Executar
 
-### Opcao 1: desenvolvimento
+### Opção 1: desenvolvimento
 
 ```powershell
 cargo run
 ```
 
-### Opcao 2: gerar executavel release
+### Opção 2: gerar executável release
 
 ```powershell
 cargo build --release
 ```
 
-Executavel gerado em:
+Executável gerado em:
 
 ```text
 target/release/claude-code-usage-monitor.exe
@@ -75,22 +75,22 @@ target/release/claude-code-usage-monitor.exe
 Depois de iniciar o app:
 
 - O widget aparece na barra de tarefas
-- O icone fica na bandeja do sistema
-- Clique esquerdo no icone: mostrar/ocultar widget
-- Clique direito no widget ou no icone: abrir menu
+- O ícone fica na bandeja do sistema
+- Clique esquerdo no ícone: mostrar/ocultar widget
+- Clique direito no widget ou no ícone: abrir menu
 
-No menu, voce pode:
+No menu, você pode:
 
 - Atualizar os dados manualmente
-- Ajustar a frequencia de atualizacao
-- Configurar a inicializacao com o Windows
-- Redefinir a posicao
+- Ajustar a frequência de atualização
+- Configurar a inicialização com o Windows
+- Redefinir a posição
 - Alterar o visual do widget (tamanho, cores, borda, margem e preenchimento)
 - Encerrar o app
 
-## Diagnostico
+## Diagnóstico
 
-Para coletar logs de diagnostico:
+Para coletar logs de diagnóstico:
 
 ```powershell
 claude-code-usage-monitor --diagnose
@@ -102,7 +102,7 @@ Arquivo de log:
 %TEMP%/claude-code-usage-monitor.log
 ```
 
-Configuracoes persistidas em:
+Configurações persistidas em:
 
 ```text
 %APPDATA%/ClaudeCodeUsageMonitor/settings.json
@@ -110,15 +110,15 @@ Configuracoes persistidas em:
 
 ## Privacidade
 
-Este projeto e open source.
+Este projeto é open source.
 
 O app:
 
-- Le credenciais locais do Claude Code para autenticacao
+- Lê credenciais locais do Claude Code para autenticação
 - Consulta endpoints da Anthropic para obter uso e limites
-- Nao envia credenciais para servidores de terceiros
-- Nao coleta telemetria propria
+- Não envia credenciais para servidores de terceiros
+- Não coleta telemetria própria
 
-## Licenca
+## Licença
 
 MIT.

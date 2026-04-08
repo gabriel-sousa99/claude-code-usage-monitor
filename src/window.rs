@@ -52,6 +52,7 @@ struct AppState {
     embedded: bool,
     language_override: Option<LanguageId>,
     language: LanguageId,
+    color_scheme_mode: ColorSchemeMode,
 
     session_percent: f64,
     session_text: String,
@@ -80,6 +81,43 @@ struct AppState {
     panel_padding_px: i32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColorSchemeMode {
+    Auto,
+    Light,
+    Dark,
+    Custom,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum SettingsColorSchemeMode {
+    Auto,
+    Light,
+    Dark,
+}
+
+impl From<SettingsColorSchemeMode> for ColorSchemeMode {
+    fn from(value: SettingsColorSchemeMode) -> Self {
+        match value {
+            SettingsColorSchemeMode::Auto => Self::Auto,
+            SettingsColorSchemeMode::Light => Self::Light,
+            SettingsColorSchemeMode::Dark => Self::Dark,
+        }
+    }
+}
+
+impl ColorSchemeMode {
+    fn to_settings(self) -> Option<SettingsColorSchemeMode> {
+        match self {
+            Self::Auto => Some(SettingsColorSchemeMode::Auto),
+            Self::Light => Some(SettingsColorSchemeMode::Light),
+            Self::Dark => Some(SettingsColorSchemeMode::Dark),
+            Self::Custom => None,
+        }
+    }
+}
+
 const RETRY_BASE_MS: u32 = 30_000; // 30 seconds
 
 const POLL_1_MIN: u32 = 60_000;
@@ -94,6 +132,9 @@ const IDM_FREQ_15MIN: u16 = 12;
 const IDM_FREQ_1HOUR: u16 = 13;
 const IDM_START_WITH_WINDOWS: u16 = 20;
 const IDM_RESET_POSITION: u16 = 30;
+const IDM_SCHEME_AUTO: u16 = 270;
+const IDM_SCHEME_LIGHT: u16 = 271;
+const IDM_SCHEME_DARK: u16 = 272;
 const IDM_LANG_SYSTEM: u16 = 40;
 const IDM_LANG_ENGLISH: u16 = 41;
 const IDM_LANG_PORTUGUESE_BRAZIL: u16 = 47;
@@ -227,6 +268,8 @@ struct SettingsFile {
     font_color_hex: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     indicator_color_hex: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    color_scheme_mode: Option<SettingsColorSchemeMode>,
 }
 
 impl Default for SettingsFile {
@@ -241,6 +284,7 @@ impl Default for SettingsFile {
             background_color_hex: None,
             font_color_hex: None,
             indicator_color_hex: None,
+            color_scheme_mode: Some(SettingsColorSchemeMode::Auto),
             border_width_px: default_border_width(),
             panel_margin_px: default_panel_margin(),
             panel_padding_px: default_panel_padding(),
@@ -305,6 +349,7 @@ fn save_state_settings() {
             background_color_hex: Some(color_to_hex(s.background_color)),
             font_color_hex: Some(color_to_hex(s.font_color)),
             indicator_color_hex: Some(color_to_hex(s.indicator_color)),
+            color_scheme_mode: s.color_scheme_mode.to_settings(),
             border_width_px: s.border_width_px,
             panel_margin_px: s.panel_margin_px,
             panel_padding_px: s.panel_padding_px,
@@ -314,6 +359,40 @@ fn save_state_settings() {
 
 fn color_to_hex(color: Color) -> String {
     format!("#{:02X}{:02X}{:02X}", color.r, color.g, color.b)
+}
+
+fn color_palette_for_mode(mode: ColorSchemeMode, is_dark_system: bool) -> (Color, Color, Color) {
+    let use_dark_palette = match mode {
+        ColorSchemeMode::Auto => is_dark_system,
+        ColorSchemeMode::Light => false,
+        ColorSchemeMode::Dark => true,
+        ColorSchemeMode::Custom => is_dark_system,
+    };
+
+    if use_dark_palette {
+        (
+            Color::from_hex("#161616"),
+            Color::from_hex("#EAEAEA"),
+            Color::from_hex("#D97757"),
+        )
+    } else {
+        (
+            Color::from_hex("#F4F6F8"),
+            Color::from_hex("#1F2933"),
+            Color::from_hex("#0A84FF"),
+        )
+    }
+}
+
+fn apply_color_scheme_to_state(state: &mut AppState) {
+    if state.color_scheme_mode == ColorSchemeMode::Custom {
+        return;
+    }
+
+    let (bg, font, indicator) = color_palette_for_mode(state.color_scheme_mode, state.is_dark);
+    state.background_color = bg;
+    state.font_color = font;
+    state.indicator_color = indicator;
 }
 
 fn shade_color(color: Color, delta: i16) -> Color {
@@ -618,21 +697,9 @@ pub fn run() {
         CUSTOM_PANEL_MARGIN_PX.store(settings.panel_margin_px, Ordering::Relaxed);
         CUSTOM_PANEL_PADDING_PX.store(settings.panel_padding_px, Ordering::Relaxed);
 
-        let background_color = settings
-            .background_color_hex
-            .as_deref()
-            .map(Color::from_hex)
-            .unwrap_or(Color::from_hex("#161616"));
-        let font_color = settings
-            .font_color_hex
-            .as_deref()
-            .map(Color::from_hex)
-            .unwrap_or(Color::from_hex("#EAEAEA"));
-        let indicator_color = settings
-            .indicator_color_hex
-            .as_deref()
-            .map(Color::from_hex)
-            .unwrap_or(Color::from_hex("#D97757"));
+        let has_custom_colors = settings.background_color_hex.is_some()
+            || settings.font_color_hex.is_some()
+            || settings.indicator_color_hex.is_some();
 
         // Create as layered popup (will be reparented into taskbar)
         let title = native_interop::wide_str(language.strings().window_title);
@@ -672,6 +739,31 @@ pub fn run() {
         diagnose::log(format!("main window created hwnd={:?}", hwnd));
 
         let is_dark = theme::is_dark_mode();
+        let color_scheme_mode = settings
+            .color_scheme_mode
+            .map(ColorSchemeMode::from)
+            .unwrap_or(if has_custom_colors {
+                ColorSchemeMode::Custom
+            } else {
+                ColorSchemeMode::Auto
+            });
+        let (scheme_bg, scheme_font, scheme_indicator) =
+            color_palette_for_mode(color_scheme_mode, is_dark);
+        let background_color = settings
+            .background_color_hex
+            .as_deref()
+            .map(Color::from_hex)
+            .unwrap_or(scheme_bg);
+        let font_color = settings
+            .font_color_hex
+            .as_deref()
+            .map(Color::from_hex)
+            .unwrap_or(scheme_font);
+        let indicator_color = settings
+            .indicator_color_hex
+            .as_deref()
+            .map(Color::from_hex)
+            .unwrap_or(scheme_indicator);
         let mut embedded = false;
 
         {
@@ -685,6 +777,7 @@ pub fn run() {
                 embedded: false,
                 language_override,
                 language,
+                color_scheme_mode,
                 session_percent: 0.0,
                 session_text: "--".to_string(),
                 weekly_percent: 0.0,
@@ -1163,6 +1256,7 @@ fn check_theme_change() {
         if let Some(s) = state.as_mut() {
             if s.is_dark != new_dark {
                 s.is_dark = new_dark;
+                apply_color_scheme_to_state(s);
                 true
             } else {
                 false
@@ -1654,6 +1748,15 @@ unsafe extern "system" fn wnd_proc(
                     };
                     apply_widget_color_preset(None, None, Some(ind));
                 }
+                IDM_SCHEME_AUTO | IDM_SCHEME_LIGHT | IDM_SCHEME_DARK => {
+                    let mode = match id {
+                        IDM_SCHEME_AUTO => ColorSchemeMode::Auto,
+                        IDM_SCHEME_LIGHT => ColorSchemeMode::Light,
+                        IDM_SCHEME_DARK => ColorSchemeMode::Dark,
+                        _ => ColorSchemeMode::Auto,
+                    };
+                    apply_widget_color_scheme(mode);
+                }
                 IDM_BORDER_NONE | IDM_BORDER_THIN | IDM_BORDER_MEDIUM | IDM_BORDER_THICK => {
                     let border = match id {
                         IDM_BORDER_NONE => 0,
@@ -1732,6 +1835,7 @@ fn show_context_menu(hwnd: HWND) {
             border_width_px,
             panel_margin_px,
             panel_padding_px,
+            color_scheme_mode,
         ) = {
             let state = lock_state();
             match state.as_ref() {
@@ -1748,6 +1852,7 @@ fn show_context_menu(hwnd: HWND) {
                     s.border_width_px,
                     s.panel_margin_px,
                     s.panel_padding_px,
+                    s.color_scheme_mode,
                 ),
                 None => (
                     POLL_15_MIN,
@@ -1762,6 +1867,7 @@ fn show_context_menu(hwnd: HWND) {
                     DEFAULT_BORDER_PX,
                     DEFAULT_PANEL_MARGIN_PX,
                     DEFAULT_PANEL_PADDING_PX,
+                    ColorSchemeMode::Auto,
                 ),
             }
         };
@@ -2011,6 +2117,29 @@ fn show_context_menu(hwnd: HWND) {
             PCWSTR::from_raw(spacing_label.as_ptr()),
         );
 
+        let scheme_menu = CreatePopupMenu().unwrap();
+        let scheme_items = [
+            (IDM_SCHEME_AUTO, "Tema: Automatico", color_scheme_mode == ColorSchemeMode::Auto),
+            (IDM_SCHEME_LIGHT, "Tema: Claro", color_scheme_mode == ColorSchemeMode::Light),
+            (IDM_SCHEME_DARK, "Tema: Escuro", color_scheme_mode == ColorSchemeMode::Dark),
+        ];
+        for (id, label, checked) in scheme_items {
+            let label_str = native_interop::wide_str(label);
+            let _ = AppendMenuW(
+                scheme_menu,
+                if checked { MF_CHECKED } else { MENU_ITEM_FLAGS(0) },
+                id as usize,
+                PCWSTR::from_raw(label_str.as_ptr()),
+            );
+        }
+        let scheme_label = native_interop::wide_str("Tema de Cores");
+        let _ = AppendMenuW(
+            customize_menu,
+            MF_POPUP,
+            scheme_menu.0 as usize,
+            PCWSTR::from_raw(scheme_label.as_ptr()),
+        );
+
         let customize_label = native_interop::wide_str("Personalizacao");
         let _ = AppendMenuW(
             settings_menu,
@@ -2156,6 +2285,7 @@ fn apply_widget_color_preset(
     {
         let mut state = lock_state();
         if let Some(s) = state.as_mut() {
+            s.color_scheme_mode = ColorSchemeMode::Custom;
             if let Some(color) = background {
                 s.background_color = color;
             }
@@ -2165,6 +2295,18 @@ fn apply_widget_color_preset(
             if let Some(color) = indicator {
                 s.indicator_color = color;
             }
+        }
+    }
+    save_state_settings();
+    render_layered();
+}
+
+fn apply_widget_color_scheme(mode: ColorSchemeMode) {
+    {
+        let mut state = lock_state();
+        if let Some(s) = state.as_mut() {
+            s.color_scheme_mode = mode;
+            apply_color_scheme_to_state(s);
         }
     }
     save_state_settings();
