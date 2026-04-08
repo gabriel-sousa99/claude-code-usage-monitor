@@ -79,6 +79,7 @@ struct AppState {
     border_width_px: i32,
     panel_margin_px: i32,
     panel_padding_px: i32,
+    panel_radius_px: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +87,8 @@ enum ColorSchemeMode {
     Auto,
     Light,
     Dark,
+    TransparentLight,
+    TransparentDark,
     Custom,
 }
 
@@ -95,6 +98,8 @@ enum SettingsColorSchemeMode {
     Auto,
     Light,
     Dark,
+    TransparentLight,
+    TransparentDark,
 }
 
 impl From<SettingsColorSchemeMode> for ColorSchemeMode {
@@ -103,6 +108,8 @@ impl From<SettingsColorSchemeMode> for ColorSchemeMode {
             SettingsColorSchemeMode::Auto => Self::Auto,
             SettingsColorSchemeMode::Light => Self::Light,
             SettingsColorSchemeMode::Dark => Self::Dark,
+            SettingsColorSchemeMode::TransparentLight => Self::TransparentLight,
+            SettingsColorSchemeMode::TransparentDark => Self::TransparentDark,
         }
     }
 }
@@ -113,6 +120,8 @@ impl ColorSchemeMode {
             Self::Auto => Some(SettingsColorSchemeMode::Auto),
             Self::Light => Some(SettingsColorSchemeMode::Light),
             Self::Dark => Some(SettingsColorSchemeMode::Dark),
+            Self::TransparentLight => Some(SettingsColorSchemeMode::TransparentLight),
+            Self::TransparentDark => Some(SettingsColorSchemeMode::TransparentDark),
             Self::Custom => None,
         }
     }
@@ -135,6 +144,8 @@ const IDM_RESET_POSITION: u16 = 30;
 const IDM_SCHEME_AUTO: u16 = 270;
 const IDM_SCHEME_LIGHT: u16 = 271;
 const IDM_SCHEME_DARK: u16 = 272;
+const IDM_SCHEME_TRANSPARENT_LIGHT: u16 = 273;
+const IDM_SCHEME_TRANSPARENT_DARK: u16 = 274;
 const IDM_LANG_SYSTEM: u16 = 40;
 const IDM_LANG_ENGLISH: u16 = 41;
 const IDM_LANG_PORTUGUESE_BRAZIL: u16 = 47;
@@ -162,6 +173,10 @@ const IDM_PADDING_8: u16 = 252;
 const IDM_MARGIN_0: u16 = 260;
 const IDM_MARGIN_2: u16 = 261;
 const IDM_MARGIN_4: u16 = 262;
+const IDM_RADIUS_6: u16 = 280;
+const IDM_RADIUS_10: u16 = 281;
+const IDM_RADIUS_14: u16 = 282;
+const IDM_RADIUS_18: u16 = 283;
 
 const DIVIDER_HIT_ZONE: i32 = 13; // LEFT_DIVIDER_W + DIVIDER_RIGHT_MARGIN
 
@@ -169,6 +184,7 @@ const WM_DPICHANGED_MSG: u32 = 0x02E0;
 const DEFAULT_BORDER_PX: i32 = 1;
 const DEFAULT_PANEL_MARGIN_PX: i32 = 1;
 const DEFAULT_PANEL_PADDING_PX: i32 = 0;
+const DEFAULT_PANEL_RADIUS_PX: i32 = 10;
 
 /// Current system DPI (96 = 100% scaling, 144 = 150%, 192 = 200%, etc.)
 static CURRENT_DPI: AtomicU32 = AtomicU32::new(96);
@@ -177,6 +193,7 @@ static CUSTOM_WIDGET_HEIGHT_PX: AtomicI32 = AtomicI32::new(0);
 static CUSTOM_BORDER_WIDTH_PX: AtomicI32 = AtomicI32::new(DEFAULT_BORDER_PX);
 static CUSTOM_PANEL_MARGIN_PX: AtomicI32 = AtomicI32::new(DEFAULT_PANEL_MARGIN_PX);
 static CUSTOM_PANEL_PADDING_PX: AtomicI32 = AtomicI32::new(DEFAULT_PANEL_PADDING_PX);
+static CUSTOM_PANEL_RADIUS_PX: AtomicI32 = AtomicI32::new(DEFAULT_PANEL_RADIUS_PX);
 
 /// Scale a base pixel value (designed at 96 DPI) to the current DPI.
 fn sc(px: i32) -> i32 {
@@ -256,6 +273,8 @@ struct SettingsFile {
     panel_margin_px: i32,
     #[serde(default = "default_panel_padding")]
     panel_padding_px: i32,
+    #[serde(default = "default_panel_radius")]
+    panel_radius_px: i32,
     #[serde(default = "default_widget_visible")]
     widget_visible: bool,
     #[serde(default)]
@@ -288,6 +307,7 @@ impl Default for SettingsFile {
             border_width_px: default_border_width(),
             panel_margin_px: default_panel_margin(),
             panel_padding_px: default_panel_padding(),
+            panel_radius_px: default_panel_radius(),
         }
     }
 }
@@ -310,6 +330,10 @@ fn default_panel_margin() -> i32 {
 
 fn default_panel_padding() -> i32 {
     DEFAULT_PANEL_PADDING_PX
+}
+
+fn default_panel_radius() -> i32 {
+    DEFAULT_PANEL_RADIUS_PX
 }
 
 fn load_settings() -> SettingsFile {
@@ -353,6 +377,7 @@ fn save_state_settings() {
             border_width_px: s.border_width_px,
             panel_margin_px: s.panel_margin_px,
             panel_padding_px: s.panel_padding_px,
+            panel_radius_px: s.panel_radius_px,
         });
     }
 }
@@ -362,25 +387,49 @@ fn color_to_hex(color: Color) -> String {
 }
 
 fn color_palette_for_mode(mode: ColorSchemeMode, is_dark_system: bool) -> (Color, Color, Color) {
-    let use_dark_palette = match mode {
-        ColorSchemeMode::Auto => is_dark_system,
-        ColorSchemeMode::Light => false,
-        ColorSchemeMode::Dark => true,
-        ColorSchemeMode::Custom => is_dark_system,
-    };
-
-    if use_dark_palette {
-        (
+    match mode {
+        ColorSchemeMode::TransparentDark => (
+            Color::from_hex("#1B1F24"),
+            Color::from_hex("#E9EEF3"),
+            Color::from_hex("#6CA8FF"),
+        ),
+        ColorSchemeMode::TransparentLight => (
+            Color::from_hex("#F7FAFC"),
+            Color::from_hex("#1D2A36"),
+            Color::from_hex("#0A84FF"),
+        ),
+        ColorSchemeMode::Dark => (
             Color::from_hex("#161616"),
             Color::from_hex("#EAEAEA"),
             Color::from_hex("#D97757"),
-        )
-    } else {
-        (
+        ),
+        ColorSchemeMode::Light => (
             Color::from_hex("#F4F6F8"),
             Color::from_hex("#1F2933"),
             Color::from_hex("#0A84FF"),
-        )
+        ),
+        ColorSchemeMode::Auto | ColorSchemeMode::Custom => {
+            if is_dark_system {
+                (
+                    Color::from_hex("#161616"),
+                    Color::from_hex("#EAEAEA"),
+                    Color::from_hex("#D97757"),
+                )
+            } else {
+                (
+                    Color::from_hex("#F4F6F8"),
+                    Color::from_hex("#1F2933"),
+                    Color::from_hex("#0A84FF"),
+                )
+            }
+        }
+    }
+}
+
+fn panel_alpha_for_mode(mode: ColorSchemeMode) -> u8 {
+    match mode {
+        ColorSchemeMode::TransparentDark | ColorSchemeMode::TransparentLight => 180,
+        _ => 255,
     }
 }
 
@@ -696,6 +745,7 @@ pub fn run() {
         CUSTOM_BORDER_WIDTH_PX.store(settings.border_width_px, Ordering::Relaxed);
         CUSTOM_PANEL_MARGIN_PX.store(settings.panel_margin_px, Ordering::Relaxed);
         CUSTOM_PANEL_PADDING_PX.store(settings.panel_padding_px, Ordering::Relaxed);
+        CUSTOM_PANEL_RADIUS_PX.store(settings.panel_radius_px, Ordering::Relaxed);
 
         let has_custom_colors = settings.background_color_hex.is_some()
             || settings.font_color_hex.is_some()
@@ -799,6 +849,7 @@ pub fn run() {
                 border_width_px: settings.border_width_px,
                 panel_margin_px: settings.panel_margin_px,
                 panel_padding_px: settings.panel_padding_px,
+                panel_radius_px: settings.panel_radius_px,
             });
         }
 
@@ -909,6 +960,7 @@ fn render_layered() {
         panel_bg,
         panel_text,
         panel_indicator,
+        color_scheme_mode,
     ) = {
         let state = lock_state();
         match state.as_ref() {
@@ -924,6 +976,7 @@ fn render_layered() {
                 s.background_color,
                 s.font_color,
                 s.indicator_color,
+                s.color_scheme_mode,
             ),
             None => return,
         }
@@ -1004,11 +1057,16 @@ fn render_layered() {
         // Background pixels → alpha 1 (nearly invisible but still hittable for right-click).
         // Content pixels → fully opaque (preserves ClearType sub-pixel rendering).
         let bg_bgr = bg_color.to_colorref();
+        let panel_bgr = panel_bg.to_colorref();
+        let panel_border_bgr = shade_color(panel_bg, 20).to_colorref();
+        let panel_alpha = panel_alpha_for_mode(color_scheme_mode);
         let pixel_data = std::slice::from_raw_parts_mut(bits as *mut u32, pixel_count);
         for px in pixel_data.iter_mut() {
             let rgb = *px & 0x00FFFFFF;
             if rgb == bg_bgr {
                 *px = 0x01000000;
+            } else if rgb == panel_bgr || rgb == panel_border_bgr {
+                *px = rgb | ((panel_alpha as u32) << 24);
             } else {
                 *px = rgb | 0xFF000000;
             }
@@ -1086,7 +1144,7 @@ fn paint_content(
             right: width - panel_margin,
             bottom: height - panel_margin,
         };
-        let panel_radius = sc(10);
+        let panel_radius = sc(CUSTOM_PANEL_RADIUS_PX.load(Ordering::Relaxed).clamp(0, 24));
         draw_rounded_rect(hdc, &panel_rect, panel_bg, panel_radius);
         if border_px > 0 {
             draw_rounded_outline(hdc, &panel_rect, &panel_border, panel_radius, border_px);
@@ -1748,11 +1806,17 @@ unsafe extern "system" fn wnd_proc(
                     };
                     apply_widget_color_preset(None, None, Some(ind));
                 }
-                IDM_SCHEME_AUTO | IDM_SCHEME_LIGHT | IDM_SCHEME_DARK => {
+                IDM_SCHEME_AUTO
+                | IDM_SCHEME_LIGHT
+                | IDM_SCHEME_DARK
+                | IDM_SCHEME_TRANSPARENT_LIGHT
+                | IDM_SCHEME_TRANSPARENT_DARK => {
                     let mode = match id {
                         IDM_SCHEME_AUTO => ColorSchemeMode::Auto,
                         IDM_SCHEME_LIGHT => ColorSchemeMode::Light,
                         IDM_SCHEME_DARK => ColorSchemeMode::Dark,
+                        IDM_SCHEME_TRANSPARENT_LIGHT => ColorSchemeMode::TransparentLight,
+                        IDM_SCHEME_TRANSPARENT_DARK => ColorSchemeMode::TransparentDark,
                         _ => ColorSchemeMode::Auto,
                     };
                     apply_widget_color_scheme(mode);
@@ -1765,7 +1829,7 @@ unsafe extern "system" fn wnd_proc(
                         IDM_BORDER_THICK => 3,
                         _ => DEFAULT_BORDER_PX,
                     };
-                    apply_widget_frame_preset(hwnd, Some(border), None, None);
+                    apply_widget_frame_preset(hwnd, Some(border), None, None, None);
                 }
                 IDM_PADDING_0 | IDM_PADDING_4 | IDM_PADDING_8 => {
                     let padding = match id {
@@ -1774,7 +1838,7 @@ unsafe extern "system" fn wnd_proc(
                         IDM_PADDING_8 => 8,
                         _ => DEFAULT_PANEL_PADDING_PX,
                     };
-                    apply_widget_frame_preset(hwnd, None, None, Some(padding));
+                    apply_widget_frame_preset(hwnd, None, None, Some(padding), None);
                 }
                 IDM_MARGIN_0 | IDM_MARGIN_2 | IDM_MARGIN_4 => {
                     let margin = match id {
@@ -1783,7 +1847,17 @@ unsafe extern "system" fn wnd_proc(
                         IDM_MARGIN_4 => 4,
                         _ => DEFAULT_PANEL_MARGIN_PX,
                     };
-                    apply_widget_frame_preset(hwnd, None, Some(margin), None);
+                    apply_widget_frame_preset(hwnd, None, Some(margin), None, None);
+                }
+                IDM_RADIUS_6 | IDM_RADIUS_10 | IDM_RADIUS_14 | IDM_RADIUS_18 => {
+                    let radius = match id {
+                        IDM_RADIUS_6 => 6,
+                        IDM_RADIUS_10 => 10,
+                        IDM_RADIUS_14 => 14,
+                        IDM_RADIUS_18 => 18,
+                        _ => DEFAULT_PANEL_RADIUS_PX,
+                    };
+                    apply_widget_frame_preset(hwnd, None, None, None, Some(radius));
                 }
                 id if id == tray_icon::IDM_TOGGLE_WIDGET => {
                     toggle_widget_visibility(hwnd);
@@ -1835,6 +1909,7 @@ fn show_context_menu(hwnd: HWND) {
             border_width_px,
             panel_margin_px,
             panel_padding_px,
+            panel_radius_px,
             color_scheme_mode,
         ) = {
             let state = lock_state();
@@ -1852,6 +1927,7 @@ fn show_context_menu(hwnd: HWND) {
                     s.border_width_px,
                     s.panel_margin_px,
                     s.panel_padding_px,
+                    s.panel_radius_px,
                     s.color_scheme_mode,
                 ),
                 None => (
@@ -1867,6 +1943,7 @@ fn show_context_menu(hwnd: HWND) {
                     DEFAULT_BORDER_PX,
                     DEFAULT_PANEL_MARGIN_PX,
                     DEFAULT_PANEL_PADDING_PX,
+                    DEFAULT_PANEL_RADIUS_PX,
                     ColorSchemeMode::Auto,
                 ),
             }
@@ -2080,6 +2157,30 @@ fn show_context_menu(hwnd: HWND) {
             PCWSTR::from_raw(border_label.as_ptr()),
         );
 
+        let radius_menu = CreatePopupMenu().unwrap();
+        let radius_items = [
+            (IDM_RADIUS_6, "Raio: 6px", panel_radius_px == 6),
+            (IDM_RADIUS_10, "Raio: 10px", panel_radius_px == 10),
+            (IDM_RADIUS_14, "Raio: 14px", panel_radius_px == 14),
+            (IDM_RADIUS_18, "Raio: 18px", panel_radius_px == 18),
+        ];
+        for (id, label, checked) in radius_items {
+            let label_str = native_interop::wide_str(label);
+            let _ = AppendMenuW(
+                radius_menu,
+                if checked { MF_CHECKED } else { MENU_ITEM_FLAGS(0) },
+                id as usize,
+                PCWSTR::from_raw(label_str.as_ptr()),
+            );
+        }
+        let radius_label = native_interop::wide_str("Raio da Borda");
+        let _ = AppendMenuW(
+            customize_menu,
+            MF_POPUP,
+            radius_menu.0 as usize,
+            PCWSTR::from_raw(radius_label.as_ptr()),
+        );
+
         let spacing_menu = CreatePopupMenu().unwrap();
         let padding_items = [
             (IDM_PADDING_0, "Preenchimento: 0px", panel_padding_px == 0),
@@ -2122,6 +2223,16 @@ fn show_context_menu(hwnd: HWND) {
             (IDM_SCHEME_AUTO, "Tema: Automatico", color_scheme_mode == ColorSchemeMode::Auto),
             (IDM_SCHEME_LIGHT, "Tema: Claro", color_scheme_mode == ColorSchemeMode::Light),
             (IDM_SCHEME_DARK, "Tema: Escuro", color_scheme_mode == ColorSchemeMode::Dark),
+            (
+                IDM_SCHEME_TRANSPARENT_LIGHT,
+                "Tema: Transparente Claro",
+                color_scheme_mode == ColorSchemeMode::TransparentLight,
+            ),
+            (
+                IDM_SCHEME_TRANSPARENT_DARK,
+                "Tema: Transparente Escuro",
+                color_scheme_mode == ColorSchemeMode::TransparentDark,
+            ),
         ];
         for (id, label, checked) in scheme_items {
             let label_str = native_interop::wide_str(label);
@@ -2313,7 +2424,13 @@ fn apply_widget_color_scheme(mode: ColorSchemeMode) {
     render_layered();
 }
 
-fn apply_widget_frame_preset(hwnd: HWND, border_px: Option<i32>, margin_px: Option<i32>, padding_px: Option<i32>) {
+fn apply_widget_frame_preset(
+    hwnd: HWND,
+    border_px: Option<i32>,
+    margin_px: Option<i32>,
+    padding_px: Option<i32>,
+    radius_px: Option<i32>,
+) {
     {
         let mut state = lock_state();
         if let Some(s) = state.as_mut() {
@@ -2331,6 +2448,11 @@ fn apply_widget_frame_preset(hwnd: HWND, border_px: Option<i32>, margin_px: Opti
                 let clamped = value.clamp(0, 16);
                 s.panel_padding_px = clamped;
                 CUSTOM_PANEL_PADDING_PX.store(clamped, Ordering::Relaxed);
+            }
+            if let Some(value) = radius_px {
+                let clamped = value.clamp(0, 24);
+                s.panel_radius_px = clamped;
+                CUSTOM_PANEL_RADIUS_PX.store(clamped, Ordering::Relaxed);
             }
         }
     }
