@@ -3,22 +3,22 @@
 
 # Claude Code Usage Monitor (Fork Customizado)
 
-Projeto em Windows para monitorar consumo do Claude Code direto na barra de tarefas.
+Projeto para Windows que monitora o consumo do Claude Code diretamente na barra de tarefas.
 
 ## Sobre Este Fork
 
-Este repositorio e um fork/customizacao do projeto original Claude Code Usage Monitor.
+Este repositorio e um fork customizado do projeto original Claude Code Usage Monitor.
 
-Objetivo deste fork:
+Objetivos deste fork:
 - Interface totalmente em portugues do Brasil
 - Visual do widget ajustado (mais compacto e com estilo de capsula)
-- Customizacao visual direto no menu de contexto
-- Remocao da funcionalidade de verificacao/acao de atualizacoes no menu
+- Customizacao visual diretamente no menu de contexto
+- Remocao da funcionalidade de verificacao e acao de atualizacoes no menu
 
 ## O Que Foi Alterado Neste Fork
 
 1. Interface em pt-BR
-- Idioma portugues do Brasil adicionado na localizacao
+- Idioma portugues do Brasil adicionado a localizacao
 - Aplicacao configurada para usar pt-BR como idioma principal
 - Menus de customizacao traduzidos para portugues
 
@@ -36,7 +36,7 @@ Objetivo deste fork:
   - Margem: 0px, 2px, 4px
 
 4. Atualizacoes
-- Fluxo de verificacao automatica/manual de atualizacoes removido do menu
+- Fluxo de verificacao automatica e manual de atualizacoes removido do menu
 
 ## Requisitos
 
@@ -75,10 +75,10 @@ Depois de iniciar o app:
 
 No menu, voce pode:
 - Atualizar os dados manualmente
-- Ajustar frequencia de atualizacao
-- Configurar inicializacao com Windows
-- Redefinir posicao
-- Alterar visual do widget (tamanho, cores, borda, margem e preenchimento)
+- Ajustar a frequencia de atualizacao
+- Configurar a inicializacao com o Windows
+- Redefinir a posicao
+- Alterar o visual do widget (tamanho, cores, borda, margem e preenchimento)
 - Encerrar o app
 
 ## Diagnostico
@@ -107,7 +107,7 @@ Este projeto e open source.
 
 O app:
 - Le credenciais locais do Claude Code para autenticacao
-- Consulta endpoints da Anthropic para obter uso/limites
+- Consulta endpoints da Anthropic para obter uso e limites
 - Nao envia credenciais para servidores de terceiros
 - Nao coleta telemetria propria
 
