@@ -1,7 +1,7 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use windows::core::PCWSTR;
@@ -20,13 +20,12 @@ use crate::diagnose;
 use crate::localization::{self, LanguageId, Strings};
 use crate::models::UsageData;
 use crate::native_interop::{
-    self, Color, TIMER_COUNTDOWN, TIMER_POLL, TIMER_RESET_POLL, TIMER_UPDATE_CHECK,
+    self, Color, TIMER_COUNTDOWN, TIMER_POLL, TIMER_RESET_POLL,
     WM_APP_TRAY, WM_APP_USAGE_UPDATED,
 };
 use crate::tray_icon;
 use crate::poller;
 use crate::theme;
-use crate::updater::{self, InstallChannel, ReleaseDescriptor, UpdateCheckResult};
 
 /// Wrapper to make HWND sendable across threads (safe for PostMessage usage)
 #[derive(Clone, Copy)]
@@ -53,7 +52,6 @@ struct AppState {
     embedded: bool,
     language_override: Option<LanguageId>,
     language: LanguageId,
-    install_channel: InstallChannel,
 
     session_percent: f64,
     session_text: String,
@@ -65,8 +63,6 @@ struct AppState {
     poll_interval_ms: u32,
     retry_count: u32,
     last_poll_ok: bool,
-    update_status: UpdateStatus,
-    last_update_check_unix: Option<u64>,
 
     tray_offset: i32,
     dragging: bool,
@@ -74,15 +70,14 @@ struct AppState {
     drag_start_offset: i32,
 
     widget_visible: bool,
-}
-
-#[derive(Clone, Debug)]
-enum UpdateStatus {
-    Idle,
-    Checking,
-    Applying,
-    UpToDate,
-    Available(ReleaseDescriptor),
+    widget_width_px: i32,
+    widget_height_px: i32,
+    background_color: Color,
+    font_color: Color,
+    indicator_color: Color,
+    border_width_px: i32,
+    panel_margin_px: i32,
+    panel_padding_px: i32,
 }
 
 const RETRY_BASE_MS: u32 = 30_000; // 30 seconds
@@ -99,22 +94,48 @@ const IDM_FREQ_15MIN: u16 = 12;
 const IDM_FREQ_1HOUR: u16 = 13;
 const IDM_START_WITH_WINDOWS: u16 = 20;
 const IDM_RESET_POSITION: u16 = 30;
-const IDM_VERSION_ACTION: u16 = 31;
 const IDM_LANG_SYSTEM: u16 = 40;
 const IDM_LANG_ENGLISH: u16 = 41;
-const IDM_LANG_SPANISH: u16 = 42;
-const IDM_LANG_FRENCH: u16 = 43;
-const IDM_LANG_GERMAN: u16 = 44;
-const IDM_LANG_JAPANESE: u16 = 45;
-const IDM_LANG_KOREAN: u16 = 46;
+const IDM_LANG_PORTUGUESE_BRAZIL: u16 = 47;
+const IDM_SIZE_AUTO: u16 = 200;
+const IDM_SIZE_COMPACT: u16 = 201;
+const IDM_SIZE_DEFAULT: u16 = 202;
+const IDM_SIZE_LARGE: u16 = 203;
+const IDM_SIZE_XL: u16 = 204;
+const IDM_BG_CHARCOAL: u16 = 210;
+const IDM_BG_SLATE: u16 = 211;
+const IDM_BG_BLACK: u16 = 212;
+const IDM_FONT_IVORY: u16 = 220;
+const IDM_FONT_SOFT: u16 = 221;
+const IDM_FONT_WHITE: u16 = 222;
+const IDM_IND_CORAL: u16 = 230;
+const IDM_IND_MINT: u16 = 231;
+const IDM_IND_BLUE: u16 = 232;
+const IDM_BORDER_NONE: u16 = 240;
+const IDM_BORDER_THIN: u16 = 241;
+const IDM_BORDER_MEDIUM: u16 = 242;
+const IDM_BORDER_THICK: u16 = 243;
+const IDM_PADDING_0: u16 = 250;
+const IDM_PADDING_4: u16 = 251;
+const IDM_PADDING_8: u16 = 252;
+const IDM_MARGIN_0: u16 = 260;
+const IDM_MARGIN_2: u16 = 261;
+const IDM_MARGIN_4: u16 = 262;
 
 const DIVIDER_HIT_ZONE: i32 = 13; // LEFT_DIVIDER_W + DIVIDER_RIGHT_MARGIN
 
 const WM_DPICHANGED_MSG: u32 = 0x02E0;
-const WM_APP_UPDATE_CHECK_COMPLETE: u32 = WM_APP + 2;
+const DEFAULT_BORDER_PX: i32 = 1;
+const DEFAULT_PANEL_MARGIN_PX: i32 = 1;
+const DEFAULT_PANEL_PADDING_PX: i32 = 0;
 
 /// Current system DPI (96 = 100% scaling, 144 = 150%, 192 = 200%, etc.)
 static CURRENT_DPI: AtomicU32 = AtomicU32::new(96);
+static CUSTOM_WIDGET_WIDTH_PX: AtomicI32 = AtomicI32::new(0);
+static CUSTOM_WIDGET_HEIGHT_PX: AtomicI32 = AtomicI32::new(0);
+static CUSTOM_BORDER_WIDTH_PX: AtomicI32 = AtomicI32::new(DEFAULT_BORDER_PX);
+static CUSTOM_PANEL_MARGIN_PX: AtomicI32 = AtomicI32::new(DEFAULT_PANEL_MARGIN_PX);
+static CUSTOM_PANEL_PADDING_PX: AtomicI32 = AtomicI32::new(DEFAULT_PANEL_PADDING_PX);
 
 /// Scale a base pixel value (designed at 96 DPI) to the current DPI.
 fn sc(px: i32) -> i32 {
@@ -188,10 +209,24 @@ struct SettingsFile {
     poll_interval_ms: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     language: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    last_update_check_unix: Option<u64>,
+    #[serde(default = "default_border_width")]
+    border_width_px: i32,
+    #[serde(default = "default_panel_margin")]
+    panel_margin_px: i32,
+    #[serde(default = "default_panel_padding")]
+    panel_padding_px: i32,
     #[serde(default = "default_widget_visible")]
     widget_visible: bool,
+    #[serde(default)]
+    widget_width_px: i32,
+    #[serde(default)]
+    widget_height_px: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    background_color_hex: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    font_color_hex: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    indicator_color_hex: Option<String>,
 }
 
 impl Default for SettingsFile {
@@ -200,8 +235,15 @@ impl Default for SettingsFile {
             tray_offset: 0,
             poll_interval_ms: default_poll_interval(),
             language: None,
-            last_update_check_unix: None,
             widget_visible: true,
+            widget_width_px: 0,
+            widget_height_px: 0,
+            background_color_hex: None,
+            font_color_hex: None,
+            indicator_color_hex: None,
+            border_width_px: default_border_width(),
+            panel_margin_px: default_panel_margin(),
+            panel_padding_px: default_panel_padding(),
         }
     }
 }
@@ -212,6 +254,18 @@ fn default_poll_interval() -> u32 {
 
 fn default_widget_visible() -> bool {
     true
+}
+
+fn default_border_width() -> i32 {
+    DEFAULT_BORDER_PX
+}
+
+fn default_panel_margin() -> i32 {
+    DEFAULT_PANEL_MARGIN_PX
+}
+
+fn default_panel_padding() -> i32 {
+    DEFAULT_PANEL_PADDING_PX
 }
 
 fn load_settings() -> SettingsFile {
@@ -240,11 +294,31 @@ fn save_state_settings() {
             poll_interval_ms: s.poll_interval_ms,
             language: s
                 .language_override
-                .map(|language| language.code().to_string()),
-            last_update_check_unix: s.last_update_check_unix,
+                .map(|language| match language {
+                    LanguageId::English => "en",
+                    LanguageId::PortugueseBrazil => "pt-BR",
+                }
+                .to_string()),
             widget_visible: s.widget_visible,
+            widget_width_px: s.widget_width_px,
+            widget_height_px: s.widget_height_px,
+            background_color_hex: Some(color_to_hex(s.background_color)),
+            font_color_hex: Some(color_to_hex(s.font_color)),
+            indicator_color_hex: Some(color_to_hex(s.indicator_color)),
+            border_width_px: s.border_width_px,
+            panel_margin_px: s.panel_margin_px,
+            panel_padding_px: s.panel_padding_px,
         });
     }
+}
+
+fn color_to_hex(color: Color) -> String {
+    format!("#{:02X}{:02X}{:02X}", color.r, color.g, color.b)
+}
+
+fn shade_color(color: Color, delta: i16) -> Color {
+    let adj = |v: u8| -> u8 { (v as i16 + delta).clamp(0, 255) as u8 };
+    Color::new(adj(color.r), adj(color.g), adj(color.b))
 }
 
 fn tray_icon_data_from_state() -> (Option<f64>, String) {
@@ -280,49 +354,6 @@ fn toggle_widget_visibility(hwnd: HWND) {
     }
 }
 
-fn now_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-fn update_check_interval() -> Duration {
-    Duration::from_secs(24 * 60 * 60)
-}
-
-fn auto_update_check_due(last_update_check_unix: Option<u64>) -> bool {
-    let Some(last_update_check_unix) = last_update_check_unix else {
-        return true;
-    };
-
-    now_unix_secs().saturating_sub(last_update_check_unix) >= update_check_interval().as_secs()
-}
-
-fn schedule_auto_update_check(hwnd: HWND) {
-    let delay_ms = {
-        let state = lock_state();
-        let Some(s) = state.as_ref() else {
-            return;
-        };
-
-        if auto_update_check_due(s.last_update_check_unix) {
-            None
-        } else {
-            let elapsed = now_unix_secs().saturating_sub(s.last_update_check_unix.unwrap_or(0));
-            let remaining_secs = update_check_interval().as_secs().saturating_sub(elapsed);
-            Some((remaining_secs.saturating_mul(1000)).min(u32::MAX as u64) as u32)
-        }
-    };
-
-    unsafe {
-        let _ = KillTimer(hwnd, TIMER_UPDATE_CHECK);
-        if let Some(delay_ms) = delay_ms {
-            SetTimer(hwnd, TIMER_UPDATE_CHECK, delay_ms.max(1), None);
-        }
-    }
-}
-
 fn refresh_usage_texts(state: &mut AppState) {
     if !state.last_poll_ok {
         return;
@@ -349,252 +380,11 @@ fn set_window_title(hwnd: HWND, strings: Strings) {
     }
 }
 
-fn show_info_message(hwnd: HWND, title: &str, message: &str) {
-    unsafe {
-        let title_wide = native_interop::wide_str(title);
-        let message_wide = native_interop::wide_str(message);
-        let _ = MessageBoxW(
-            hwnd,
-            PCWSTR::from_raw(message_wide.as_ptr()),
-            PCWSTR::from_raw(title_wide.as_ptr()),
-            MB_OK | MB_ICONINFORMATION,
-        );
-    }
-}
-
-fn show_error_message(hwnd: HWND, title: &str, message: &str) {
-    unsafe {
-        let title_wide = native_interop::wide_str(title);
-        let message_wide = native_interop::wide_str(message);
-        let _ = MessageBoxW(
-            hwnd,
-            PCWSTR::from_raw(message_wide.as_ptr()),
-            PCWSTR::from_raw(title_wide.as_ptr()),
-            MB_OK | MB_ICONERROR,
-        );
-    }
-}
-
-fn show_update_prompt(hwnd: HWND, strings: Strings, release: &ReleaseDescriptor) -> bool {
-    let message = strings
-        .update_prompt_now
-        .replace("{version}", &release.latest_version);
-
-    unsafe {
-        let title_wide = native_interop::wide_str(strings.update_available);
-        let message_wide = native_interop::wide_str(&message);
-        MessageBoxW(
-            hwnd,
-            PCWSTR::from_raw(message_wide.as_ptr()),
-            PCWSTR::from_raw(title_wide.as_ptr()),
-            MB_YESNO | MB_ICONQUESTION,
-        ) == IDYES
-    }
-}
-
 fn apply_language_to_state(state: &mut AppState, language_override: Option<LanguageId>) {
     state.language_override = language_override;
     state.language = localization::resolve_language(language_override);
     set_window_title(state.hwnd.to_hwnd(), state.language.strings());
     refresh_usage_texts(state);
-}
-
-fn update_language_change() -> bool {
-    let mut state = lock_state();
-    let Some(app_state) = state.as_mut() else {
-        return false;
-    };
-
-    if app_state.language_override.is_some() {
-        return false;
-    }
-
-    let new_language = localization::detect_system_language();
-    if new_language == app_state.language {
-        return false;
-    }
-
-    apply_language_to_state(app_state, None);
-    true
-}
-
-fn version_action_label(
-    strings: Strings,
-    language: LanguageId,
-    install_channel: InstallChannel,
-    status: &UpdateStatus,
-) -> String {
-    let current = env!("CARGO_PKG_VERSION");
-    match status {
-        UpdateStatus::Idle => format!("v{current} - {}", strings.check_for_updates),
-        UpdateStatus::Checking => format!("v{current} - {}", strings.checking_for_updates),
-        UpdateStatus::Applying => format!("v{current} - {}", strings.applying_update),
-        UpdateStatus::UpToDate => format!("v{current} - {}", strings.up_to_date_short),
-        UpdateStatus::Available(release) => match install_channel {
-            InstallChannel::Portable => {
-                format!(
-                    "v{current} - {} v{}",
-                    strings.update_to, release.latest_version
-                )
-            }
-            InstallChannel::Winget => format!(
-                "v{current} - {} v{}",
-                localization::update_via_winget(language),
-                release.latest_version
-            ),
-        },
-    }
-}
-
-fn begin_update_check(hwnd: HWND, interactive: bool) {
-    let send_hwnd = SendHwnd::from_hwnd(hwnd);
-    let (strings, install_channel) = {
-        let mut state = lock_state();
-        let Some(app_state) = state.as_mut() else {
-            return;
-        };
-
-        if matches!(
-            app_state.update_status,
-            UpdateStatus::Checking | UpdateStatus::Applying
-        ) {
-            if interactive {
-                show_info_message(
-                    hwnd,
-                    app_state.language.strings().updates,
-                    app_state.language.strings().update_in_progress,
-                );
-            }
-            return;
-        }
-
-        app_state.update_status = UpdateStatus::Checking;
-        (app_state.language.strings(), app_state.install_channel)
-    };
-
-    std::thread::spawn(move || {
-        let hwnd = send_hwnd.to_hwnd();
-        let checked_at = now_unix_secs();
-        match updater::check_for_updates() {
-            Ok(UpdateCheckResult::UpToDate) => {
-                {
-                    let mut state = lock_state();
-                    if let Some(s) = state.as_mut() {
-                        s.update_status = UpdateStatus::UpToDate;
-                        s.last_update_check_unix = Some(checked_at);
-                    }
-                }
-                save_state_settings();
-                if interactive {
-                    show_info_message(hwnd, strings.updates, strings.up_to_date);
-                }
-                unsafe {
-                    let _ = PostMessageW(hwnd, WM_APP_UPDATE_CHECK_COMPLETE, WPARAM(0), LPARAM(0));
-                }
-            }
-            Ok(UpdateCheckResult::Available(release)) => {
-                {
-                    let mut state = lock_state();
-                    if let Some(s) = state.as_mut() {
-                        s.update_status = UpdateStatus::Available(release.clone());
-                        s.last_update_check_unix = Some(checked_at);
-                    }
-                }
-                save_state_settings();
-                if interactive && show_update_prompt(hwnd, strings, &release) {
-                    match install_channel {
-                        InstallChannel::Portable => begin_update_apply(hwnd, release),
-                        InstallChannel::Winget => begin_winget_update(hwnd),
-                    }
-                }
-                unsafe {
-                    let _ = PostMessageW(hwnd, WM_APP_UPDATE_CHECK_COMPLETE, WPARAM(0), LPARAM(0));
-                }
-            }
-            Err(error) => {
-                {
-                    let mut state = lock_state();
-                    if let Some(s) = state.as_mut() {
-                        s.update_status = UpdateStatus::Idle;
-                        s.last_update_check_unix = Some(checked_at);
-                    }
-                }
-                save_state_settings();
-                if interactive {
-                    let message = format!("{}.\n\n{}", strings.update_failed, error);
-                    show_error_message(hwnd, strings.updates, &message);
-                }
-                unsafe {
-                    let _ = PostMessageW(hwnd, WM_APP_UPDATE_CHECK_COMPLETE, WPARAM(0), LPARAM(0));
-                }
-            }
-        }
-    });
-}
-
-fn begin_update_apply(hwnd: HWND, release: ReleaseDescriptor) {
-    let send_hwnd = SendHwnd::from_hwnd(hwnd);
-    let strings = {
-        let mut state = lock_state();
-        let Some(app_state) = state.as_mut() else {
-            return;
-        };
-
-        if matches!(
-            app_state.update_status,
-            UpdateStatus::Checking | UpdateStatus::Applying
-        ) {
-            show_info_message(
-                hwnd,
-                app_state.language.strings().updates,
-                app_state.language.strings().update_in_progress,
-            );
-            return;
-        }
-
-        app_state.update_status = UpdateStatus::Applying;
-        app_state.language.strings()
-    };
-
-    std::thread::spawn(move || {
-        let hwnd = send_hwnd.to_hwnd();
-        match updater::begin_self_update(&release) {
-            Ok(()) => unsafe {
-                let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
-            },
-            Err(error) => {
-                {
-                    let mut state = lock_state();
-                    if let Some(s) = state.as_mut() {
-                        s.update_status = UpdateStatus::Available(release);
-                    }
-                }
-                let message = format!("{}.\n\n{}", strings.update_failed, error);
-                show_error_message(hwnd, strings.updates, &message);
-                unsafe {
-                    let _ = PostMessageW(hwnd, WM_APP_UPDATE_CHECK_COMPLETE, WPARAM(0), LPARAM(0));
-                }
-            }
-        }
-    });
-}
-
-fn begin_winget_update(hwnd: HWND) {
-    let strings = {
-        let state = lock_state();
-        state.as_ref().map(|s| s.language.strings())
-    }
-    .unwrap_or(LanguageId::English.strings());
-
-    match updater::begin_winget_update() {
-        Ok(()) => unsafe {
-            let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
-        },
-        Err(error) => {
-            let message = format!("{}.\n\n{}", strings.update_failed, error);
-            show_error_message(hwnd, strings.updates, &message);
-        }
-    }
 }
 
 const STARTUP_REGISTRY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -713,21 +503,21 @@ fn set_startup_enabled(enable: bool) {
 
 // Dimensions matching the C# version
 const SEGMENT_W: i32 = 10;
-const SEGMENT_H: i32 = 13;
+const SEGMENT_H: i32 = 12;
 const SEGMENT_GAP: i32 = 1;
 const SEGMENT_COUNT: i32 = 10;
-const CORNER_RADIUS: i32 = 2;
+const CORNER_RADIUS: i32 = 4;
 
 const LEFT_DIVIDER_W: i32 = 3;
 const DIVIDER_RIGHT_MARGIN: i32 = 10;
 const LABEL_WIDTH: i32 = 18;
-const LABEL_RIGHT_MARGIN: i32 = 10;
-const BAR_RIGHT_MARGIN: i32 = 4;
+const LABEL_RIGHT_MARGIN: i32 = 8;
+const BAR_RIGHT_MARGIN: i32 = 8;
 const TEXT_WIDTH: i32 = 62;
-const RIGHT_MARGIN: i32 = 1;
-const WIDGET_HEIGHT: i32 = 46;
+const RIGHT_MARGIN: i32 = 12;
+const WIDGET_HEIGHT: i32 = 42;
 
-fn total_widget_width() -> i32 {
+fn base_widget_width() -> i32 {
     sc(LEFT_DIVIDER_W)
         + sc(DIVIDER_RIGHT_MARGIN)
         + sc(LABEL_WIDTH)
@@ -737,6 +527,35 @@ fn total_widget_width() -> i32 {
         + sc(BAR_RIGHT_MARGIN)
         + sc(TEXT_WIDTH)
         + sc(RIGHT_MARGIN)
+}
+
+fn total_widget_width() -> i32 {
+    let panel_extra = (CUSTOM_PANEL_MARGIN_PX.load(Ordering::Relaxed)
+        + CUSTOM_PANEL_PADDING_PX.load(Ordering::Relaxed))
+        .max(0)
+        * 2;
+    let custom = CUSTOM_WIDGET_WIDTH_PX.load(Ordering::Relaxed);
+    let min_width = base_widget_width() + panel_extra;
+    if custom > 0 {
+        custom.max(min_width)
+    } else {
+        min_width
+    }
+}
+
+fn total_widget_height() -> i32 {
+    let panel_extra = (CUSTOM_PANEL_MARGIN_PX.load(Ordering::Relaxed)
+        + CUSTOM_PANEL_PADDING_PX.load(Ordering::Relaxed))
+        .max(0)
+        * 2;
+    let custom = CUSTOM_WIDGET_HEIGHT_PX.load(Ordering::Relaxed);
+    let min_height = sc(36) + panel_extra;
+    let base = sc(WIDGET_HEIGHT) + panel_extra;
+    if custom > 0 {
+        custom.max(min_height)
+    } else {
+        base
+    }
 }
 
 pub fn run() {
@@ -791,9 +610,29 @@ pub fn run() {
         }
 
         let settings = load_settings();
-        let language_override = settings.language.as_deref().and_then(LanguageId::from_code);
-        let language = localization::resolve_language(language_override);
-        let install_channel = updater::current_install_channel();
+        let language_override = Some(LanguageId::PortugueseBrazil);
+        let language = LanguageId::PortugueseBrazil;
+        CUSTOM_WIDGET_WIDTH_PX.store(settings.widget_width_px, Ordering::Relaxed);
+        CUSTOM_WIDGET_HEIGHT_PX.store(settings.widget_height_px, Ordering::Relaxed);
+        CUSTOM_BORDER_WIDTH_PX.store(settings.border_width_px, Ordering::Relaxed);
+        CUSTOM_PANEL_MARGIN_PX.store(settings.panel_margin_px, Ordering::Relaxed);
+        CUSTOM_PANEL_PADDING_PX.store(settings.panel_padding_px, Ordering::Relaxed);
+
+        let background_color = settings
+            .background_color_hex
+            .as_deref()
+            .map(Color::from_hex)
+            .unwrap_or(Color::from_hex("#161616"));
+        let font_color = settings
+            .font_color_hex
+            .as_deref()
+            .map(Color::from_hex)
+            .unwrap_or(Color::from_hex("#EAEAEA"));
+        let indicator_color = settings
+            .indicator_color_hex
+            .as_deref()
+            .map(Color::from_hex)
+            .unwrap_or(Color::from_hex("#D97757"));
 
         // Create as layered popup (will be reparented into taskbar)
         let title = native_interop::wide_str(language.strings().window_title);
@@ -805,7 +644,7 @@ pub fn run() {
             0,
             0,
             total_widget_width(),
-            sc(WIDGET_HEIGHT),
+            total_widget_height(),
             HWND::default(),
             HMENU::default(),
             hinstance,
@@ -846,7 +685,6 @@ pub fn run() {
                 embedded: false,
                 language_override,
                 language,
-                install_channel,
                 session_percent: 0.0,
                 session_text: "--".to_string(),
                 weekly_percent: 0.0,
@@ -855,13 +693,19 @@ pub fn run() {
                 poll_interval_ms: settings.poll_interval_ms,
                 retry_count: 0,
                 last_poll_ok: false,
-                update_status: UpdateStatus::Idle,
-                last_update_check_unix: settings.last_update_check_unix,
                 tray_offset: settings.tray_offset,
                 dragging: false,
                 drag_start_mouse_x: 0,
                 drag_start_offset: 0,
                 widget_visible: settings.widget_visible,
+                widget_width_px: settings.widget_width_px,
+                widget_height_px: settings.widget_height_px,
+                background_color,
+                font_color,
+                indicator_color,
+                border_width_px: settings.border_width_px,
+                panel_margin_px: settings.panel_margin_px,
+                panel_padding_px: settings.panel_padding_px,
             });
         }
 
@@ -943,18 +787,6 @@ pub fn run() {
             do_poll(send_hwnd);
         });
 
-        schedule_auto_update_check(hwnd);
-        let should_check_updates = {
-            let state = lock_state();
-            state
-                .as_ref()
-                .map(|s| auto_update_check_due(s.last_update_check_unix))
-                .unwrap_or(false)
-        };
-        if should_check_updates {
-            begin_update_check(hwnd, false);
-        }
-
         // Initial theme check
         check_theme_change();
 
@@ -972,7 +804,19 @@ pub fn run() {
 /// ClearType sub-pixel font rendering can be used for crisp, OS-native text.
 fn render_layered() {
     refresh_dpi();
-    let (hwnd_val, is_dark, embedded, strings, session_pct, session_text, weekly_pct, weekly_text) = {
+    let (
+        hwnd_val,
+        is_dark,
+        embedded,
+        strings,
+        session_pct,
+        session_text,
+        weekly_pct,
+        weekly_text,
+        panel_bg,
+        panel_text,
+        panel_indicator,
+    ) = {
         let state = lock_state();
         match state.as_ref() {
             Some(s) => (
@@ -984,6 +828,9 @@ fn render_layered() {
                 s.session_text.clone(),
                 s.weekly_percent,
                 s.weekly_text.clone(),
+                s.background_color,
+                s.font_color,
+                s.indicator_color,
             ),
             None => return,
         }
@@ -1000,19 +847,11 @@ fn render_layered() {
     }
 
     let width = total_widget_width();
-    let height = sc(WIDGET_HEIGHT);
+    let height = total_widget_height();
 
-    let accent = Color::from_hex("#D97757");
-    let track = if is_dark {
-        Color::from_hex("#444444")
-    } else {
-        Color::from_hex("#AAAAAA")
-    };
-    let text_color = if is_dark {
-        Color::from_hex("#888888")
-    } else {
-        Color::from_hex("#404040")
-    };
+    let accent = panel_indicator;
+    let track = shade_color(panel_indicator, -88);
+    let text_color = panel_text;
     let bg_color = if is_dark {
         Color::from_hex("#1C1C1C")
     } else {
@@ -1058,6 +897,7 @@ fn render_layered() {
             height,
             is_dark,
             &bg_color,
+            &panel_bg,
             &text_color,
             &accent,
             &track,
@@ -1119,8 +959,9 @@ fn paint_content(
     hdc: HDC,
     width: i32,
     height: i32,
-    is_dark: bool,
+    _is_dark: bool,
     bg: &Color,
+    panel_bg: &Color,
     text_color: &Color,
     accent: &Color,
     track: &Color,
@@ -1142,57 +983,39 @@ fn paint_content(
         FillRect(hdc, &client_rect, bg_brush);
         let _ = DeleteObject(bg_brush);
 
-        // Left divider
-        let divider_h = sc(25);
-        let divider_top = (height - divider_h) / 2;
-        let divider_bottom = divider_top + divider_h;
-
-        let (div_left, div_right) = if is_dark {
-            ((80, 80, 80), (40, 40, 40))
-        } else {
-            ((160, 160, 160), (230, 230, 230))
+        let panel_border = shade_color(*panel_bg, 20);
+        let border_px = CUSTOM_BORDER_WIDTH_PX.load(Ordering::Relaxed).clamp(0, 6);
+        let panel_margin = CUSTOM_PANEL_MARGIN_PX.load(Ordering::Relaxed).max(0);
+        let panel_padding = CUSTOM_PANEL_PADDING_PX.load(Ordering::Relaxed).max(0);
+        let panel_rect = RECT {
+            left: panel_margin,
+            top: panel_margin,
+            right: width - panel_margin,
+            bottom: height - panel_margin,
         };
+        let panel_radius = sc(10);
+        draw_rounded_rect(hdc, &panel_rect, panel_bg, panel_radius);
+        if border_px > 0 {
+            draw_rounded_outline(hdc, &panel_rect, &panel_border, panel_radius, border_px);
+        }
 
-        let left_brush = CreateSolidBrush(COLORREF(native_interop::colorref(
-            div_left.0, div_left.1, div_left.2,
-        )));
-        let left_rect = RECT {
-            left: 0,
-            top: divider_top,
-            right: sc(2),
-            bottom: divider_bottom,
-        };
-        FillRect(hdc, &left_rect, left_brush);
-        let _ = DeleteObject(left_brush);
-
-        let right_brush = CreateSolidBrush(COLORREF(native_interop::colorref(
-            div_right.0,
-            div_right.1,
-            div_right.2,
-        )));
-        let right_rect = RECT {
-            left: sc(2),
-            top: divider_top,
-            right: sc(3),
-            bottom: divider_bottom,
-        };
-        FillRect(hdc, &right_rect, right_brush);
-        let _ = DeleteObject(right_brush);
-
-        let content_x = sc(LEFT_DIVIDER_W) + sc(DIVIDER_RIGHT_MARGIN);
-        let row2_y = height - sc(5) - sc(SEGMENT_H);
-        let row1_y = row2_y - sc(10) - sc(SEGMENT_H);
+        let content_x =
+            panel_margin + panel_padding + sc(LEFT_DIVIDER_W) + sc(DIVIDER_RIGHT_MARGIN);
+        let row_gap = sc(8);
+        let rows_h = sc(SEGMENT_H) * 2 + row_gap;
+        let row1_y = ((height - rows_h) / 2).max(panel_margin + panel_padding);
+        let row2_y = row1_y + sc(SEGMENT_H) + row_gap;
 
         let _ = SetBkMode(hdc, TRANSPARENT);
         let _ = SetTextColor(hdc, COLORREF(text_color.to_colorref()));
 
-        let font_name = native_interop::wide_str("Segoe UI");
+        let font_name = native_interop::wide_str("Segoe UI Semibold");
         let font = CreateFontW(
-            sc(-12),
+            sc(-11),
             0,
             0,
             0,
-            FW_MEDIUM.0 as i32,
+            FW_SEMIBOLD.0 as i32,
             0,
             0,
             0,
@@ -1354,9 +1177,7 @@ fn check_theme_change() {
 }
 
 fn check_language_change() {
-    if update_language_change() {
-        render_layered();
-    }
+    let _ = ();
 }
 
 fn update_display() {
@@ -1420,7 +1241,7 @@ fn position_at_taskbar() {
 
     let widget_width = total_widget_width();
 
-    let widget_height = sc(WIDGET_HEIGHT);
+    let widget_height = total_widget_height();
     let y = compute_anchor_y(anchor_top, anchor_height, widget_height);
     if embedded {
         // Child window: coordinates relative to parent (taskbar)
@@ -1549,9 +1370,6 @@ unsafe extern "system" fn wnd_proc(
                         do_poll(sh);
                     });
                 }
-                TIMER_UPDATE_CHECK => {
-                    begin_update_check(hwnd, false);
-                }
                 _ => {}
             }
             LRESULT(0)
@@ -1563,10 +1381,6 @@ unsafe extern "system" fn wnd_proc(
             schedule_countdown_timer();
             let (pct, tooltip) = tray_icon_data_from_state();
             tray_icon::update(hwnd, pct, &tooltip);
-            LRESULT(0)
-        }
-        WM_APP_UPDATE_CHECK_COMPLETE => {
-            schedule_auto_update_check(hwnd);
             LRESULT(0)
         }
         WM_SETCURSOR => {
@@ -1676,7 +1490,7 @@ unsafe extern "system" fn wnd_proc(
                             }
                         }
                         let widget_width = total_widget_width();
-                        let widget_height = sc(WIDGET_HEIGHT);
+                        let widget_height = total_widget_height();
                         let y = compute_anchor_y(anchor_top, anchor_height, widget_height);
                         if s.embedded {
                             let x = tray_left - taskbar_rect.left - widget_width - new_offset;
@@ -1744,38 +1558,6 @@ unsafe extern "system" fn wnd_proc(
                         do_poll(sh);
                     });
                 }
-                IDM_VERSION_ACTION => {
-                    let (install_channel, release) = {
-                        let state = lock_state();
-                        match state.as_ref() {
-                            Some(s) => (
-                                s.install_channel,
-                                match &s.update_status {
-                                    UpdateStatus::Available(release) => Some(release.clone()),
-                                    _ => None,
-                                },
-                            ),
-                            None => (InstallChannel::Portable, None),
-                        }
-                    };
-
-                    match install_channel {
-                        InstallChannel::Winget => {
-                            if release.is_some() {
-                                begin_winget_update(hwnd);
-                            } else {
-                                begin_update_check(hwnd, true);
-                            }
-                        }
-                        InstallChannel::Portable => {
-                            if let Some(release) = release {
-                                begin_update_apply(hwnd, release);
-                            } else {
-                                begin_update_check(hwnd, true);
-                            }
-                        }
-                    }
-                }
                 2 => {
                     let hook = {
                         let state = lock_state();
@@ -1817,16 +1599,11 @@ unsafe extern "system" fn wnd_proc(
                     // Reset the poll timer with the new interval
                     SetTimer(hwnd, TIMER_POLL, new_interval, None);
                 }
-                IDM_LANG_SYSTEM | IDM_LANG_ENGLISH | IDM_LANG_SPANISH | IDM_LANG_FRENCH
-                | IDM_LANG_GERMAN | IDM_LANG_JAPANESE | IDM_LANG_KOREAN => {
+                IDM_LANG_SYSTEM | IDM_LANG_ENGLISH | IDM_LANG_PORTUGUESE_BRAZIL => {
                     let language_override = match id {
                         IDM_LANG_SYSTEM => None,
                         IDM_LANG_ENGLISH => Some(LanguageId::English),
-                        IDM_LANG_SPANISH => Some(LanguageId::Spanish),
-                        IDM_LANG_FRENCH => Some(LanguageId::French),
-                        IDM_LANG_GERMAN => Some(LanguageId::German),
-                        IDM_LANG_JAPANESE => Some(LanguageId::Japanese),
-                        IDM_LANG_KOREAN => Some(LanguageId::Korean),
+                        IDM_LANG_PORTUGUESE_BRAZIL => Some(LanguageId::PortugueseBrazil),
                         _ => None,
                     };
                     {
@@ -1837,6 +1614,73 @@ unsafe extern "system" fn wnd_proc(
                     }
                     save_state_settings();
                     render_layered();
+                }
+                IDM_SIZE_AUTO | IDM_SIZE_COMPACT | IDM_SIZE_DEFAULT | IDM_SIZE_LARGE
+                | IDM_SIZE_XL => {
+                    let (width, height) = match id {
+                        IDM_SIZE_AUTO => (0, 0),
+                        IDM_SIZE_COMPACT => (320, 38),
+                        IDM_SIZE_DEFAULT => (360, 44),
+                        IDM_SIZE_LARGE => (400, 50),
+                        IDM_SIZE_XL => (440, 56),
+                        _ => (0, 0),
+                    };
+                    apply_widget_size_preset(hwnd, width, height);
+                }
+                IDM_BG_CHARCOAL | IDM_BG_SLATE | IDM_BG_BLACK => {
+                    let bg = match id {
+                        IDM_BG_CHARCOAL => Color::from_hex("#161616"),
+                        IDM_BG_SLATE => Color::from_hex("#1E242B"),
+                        IDM_BG_BLACK => Color::from_hex("#0F0F0F"),
+                        _ => Color::from_hex("#161616"),
+                    };
+                    apply_widget_color_preset(Some(bg), None, None);
+                }
+                IDM_FONT_IVORY | IDM_FONT_SOFT | IDM_FONT_WHITE => {
+                    let fg = match id {
+                        IDM_FONT_IVORY => Color::from_hex("#EAEAEA"),
+                        IDM_FONT_SOFT => Color::from_hex("#C9D1D9"),
+                        IDM_FONT_WHITE => Color::from_hex("#FFFFFF"),
+                        _ => Color::from_hex("#EAEAEA"),
+                    };
+                    apply_widget_color_preset(None, Some(fg), None);
+                }
+                IDM_IND_CORAL | IDM_IND_MINT | IDM_IND_BLUE => {
+                    let ind = match id {
+                        IDM_IND_CORAL => Color::from_hex("#D97757"),
+                        IDM_IND_MINT => Color::from_hex("#5AC79B"),
+                        IDM_IND_BLUE => Color::from_hex("#5B8DEF"),
+                        _ => Color::from_hex("#D97757"),
+                    };
+                    apply_widget_color_preset(None, None, Some(ind));
+                }
+                IDM_BORDER_NONE | IDM_BORDER_THIN | IDM_BORDER_MEDIUM | IDM_BORDER_THICK => {
+                    let border = match id {
+                        IDM_BORDER_NONE => 0,
+                        IDM_BORDER_THIN => 1,
+                        IDM_BORDER_MEDIUM => 2,
+                        IDM_BORDER_THICK => 3,
+                        _ => DEFAULT_BORDER_PX,
+                    };
+                    apply_widget_frame_preset(hwnd, Some(border), None, None);
+                }
+                IDM_PADDING_0 | IDM_PADDING_4 | IDM_PADDING_8 => {
+                    let padding = match id {
+                        IDM_PADDING_0 => 0,
+                        IDM_PADDING_4 => 4,
+                        IDM_PADDING_8 => 8,
+                        _ => DEFAULT_PANEL_PADDING_PX,
+                    };
+                    apply_widget_frame_preset(hwnd, None, None, Some(padding));
+                }
+                IDM_MARGIN_0 | IDM_MARGIN_2 | IDM_MARGIN_4 => {
+                    let margin = match id {
+                        IDM_MARGIN_0 => 0,
+                        IDM_MARGIN_2 => 2,
+                        IDM_MARGIN_4 => 4,
+                        _ => DEFAULT_PANEL_MARGIN_PX,
+                    };
+                    apply_widget_frame_preset(hwnd, None, Some(margin), None);
                 }
                 id if id == tray_icon::IDM_TOGGLE_WIDGET => {
                     toggle_widget_visibility(hwnd);
@@ -1878,31 +1722,46 @@ fn show_context_menu(hwnd: HWND) {
         let (
             current_interval,
             strings,
-            language,
             language_override,
-            install_channel,
-            update_status,
             widget_visible,
+            widget_width_px,
+            widget_height_px,
+            background_color,
+            font_color,
+            indicator_color,
+            border_width_px,
+            panel_margin_px,
+            panel_padding_px,
         ) = {
             let state = lock_state();
             match state.as_ref() {
                 Some(s) => (
                     s.poll_interval_ms,
                     s.language.strings(),
-                    s.language,
                     s.language_override,
-                    s.install_channel,
-                    s.update_status.clone(),
                     s.widget_visible,
+                    s.widget_width_px,
+                    s.widget_height_px,
+                    s.background_color,
+                    s.font_color,
+                    s.indicator_color,
+                    s.border_width_px,
+                    s.panel_margin_px,
+                    s.panel_padding_px,
                 ),
                 None => (
                     POLL_15_MIN,
-                    LanguageId::English.strings(),
-                    LanguageId::English,
+                    LanguageId::PortugueseBrazil.strings(),
                     None,
-                    InstallChannel::Portable,
-                    UpdateStatus::Idle,
                     true,
+                    0,
+                    0,
+                    Color::from_hex("#161616"),
+                    Color::from_hex("#EAEAEA"),
+                    Color::from_hex("#D97757"),
+                    DEFAULT_BORDER_PX,
+                    DEFAULT_PANEL_MARGIN_PX,
+                    DEFAULT_PANEL_PADDING_PX,
                 ),
             }
         };
@@ -1989,11 +1848,7 @@ fn show_context_menu(hwnd: HWND) {
         for language in LanguageId::ALL {
             let id = match language {
                 LanguageId::English => IDM_LANG_ENGLISH,
-                LanguageId::Spanish => IDM_LANG_SPANISH,
-                LanguageId::French => IDM_LANG_FRENCH,
-                LanguageId::German => IDM_LANG_GERMAN,
-                LanguageId::Japanese => IDM_LANG_JAPANESE,
-                LanguageId::Korean => IDM_LANG_KOREAN,
+                LanguageId::PortugueseBrazil => IDM_LANG_PORTUGUESE_BRAZIL,
             };
             let label_str = native_interop::wide_str(language.native_name());
             let flags = if language_override == Some(language) {
@@ -2017,22 +1872,151 @@ fn show_context_menu(hwnd: HWND) {
             PCWSTR::from_raw(language_label.as_ptr()),
         );
 
-        let _ = AppendMenuW(settings_menu, MF_SEPARATOR, 0, PCWSTR::null());
+        let customize_menu = CreatePopupMenu().unwrap();
 
-        let version_label =
-            version_action_label(strings, language, install_channel, &update_status);
-        let version_str = native_interop::wide_str(&version_label);
-        let version_flags = if matches!(update_status, UpdateStatus::Checking | UpdateStatus::Applying)
-        {
-            MF_GRAYED
-        } else {
-            MENU_ITEM_FLAGS(0)
-        };
+        let size_menu = CreatePopupMenu().unwrap();
+        let size_items = [
+            (IDM_SIZE_AUTO, "Tamanho: Automatico", widget_width_px == 0 && widget_height_px == 0),
+            (IDM_SIZE_COMPACT, "Tamanho: 320x38", widget_width_px == 320 && widget_height_px == 38),
+            (IDM_SIZE_DEFAULT, "Tamanho: 360x44", widget_width_px == 360 && widget_height_px == 44),
+            (IDM_SIZE_LARGE, "Tamanho: 400x50", widget_width_px == 400 && widget_height_px == 50),
+            (IDM_SIZE_XL, "Tamanho: 440x56", widget_width_px == 440 && widget_height_px == 56),
+        ];
+        for (id, label, checked) in size_items {
+            let label_str = native_interop::wide_str(label);
+            let _ = AppendMenuW(
+                size_menu,
+                if checked { MF_CHECKED } else { MENU_ITEM_FLAGS(0) },
+                id as usize,
+                PCWSTR::from_raw(label_str.as_ptr()),
+            );
+        }
+        let size_label = native_interop::wide_str("Tamanho (px)");
+        let _ = AppendMenuW(
+            customize_menu,
+            MF_POPUP,
+            size_menu.0 as usize,
+            PCWSTR::from_raw(size_label.as_ptr()),
+        );
+
+        let colors_menu = CreatePopupMenu().unwrap();
+        let bg_items = [
+            (IDM_BG_CHARCOAL, "Fundo: Carvao", background_color == Color::from_hex("#161616")),
+            (IDM_BG_SLATE, "Fundo: Ardósia", background_color == Color::from_hex("#1E242B")),
+            (IDM_BG_BLACK, "Fundo: Preto", background_color == Color::from_hex("#0F0F0F")),
+        ];
+        for (id, label, checked) in bg_items {
+            let label_str = native_interop::wide_str(label);
+            let _ = AppendMenuW(
+                colors_menu,
+                if checked { MF_CHECKED } else { MENU_ITEM_FLAGS(0) },
+                id as usize,
+                PCWSTR::from_raw(label_str.as_ptr()),
+            );
+        }
+        let font_items = [
+            (IDM_FONT_IVORY, "Fonte: Marfim", font_color == Color::from_hex("#EAEAEA")),
+            (IDM_FONT_SOFT, "Fonte: Suave", font_color == Color::from_hex("#C9D1D9")),
+            (IDM_FONT_WHITE, "Fonte: Branca", font_color == Color::from_hex("#FFFFFF")),
+        ];
+        for (id, label, checked) in font_items {
+            let label_str = native_interop::wide_str(label);
+            let _ = AppendMenuW(
+                colors_menu,
+                if checked { MF_CHECKED } else { MENU_ITEM_FLAGS(0) },
+                id as usize,
+                PCWSTR::from_raw(label_str.as_ptr()),
+            );
+        }
+        let indicator_items = [
+            (IDM_IND_CORAL, "Indicadores: Coral", indicator_color == Color::from_hex("#D97757")),
+            (IDM_IND_MINT, "Indicadores: Menta", indicator_color == Color::from_hex("#5AC79B")),
+            (IDM_IND_BLUE, "Indicadores: Azul", indicator_color == Color::from_hex("#5B8DEF")),
+        ];
+        for (id, label, checked) in indicator_items {
+            let label_str = native_interop::wide_str(label);
+            let _ = AppendMenuW(
+                colors_menu,
+                if checked { MF_CHECKED } else { MENU_ITEM_FLAGS(0) },
+                id as usize,
+                PCWSTR::from_raw(label_str.as_ptr()),
+            );
+        }
+        let colors_label = native_interop::wide_str("Cores");
+        let _ = AppendMenuW(
+            customize_menu,
+            MF_POPUP,
+            colors_menu.0 as usize,
+            PCWSTR::from_raw(colors_label.as_ptr()),
+        );
+
+        let border_menu = CreatePopupMenu().unwrap();
+        let border_items = [
+            (IDM_BORDER_NONE, "Borda: 0px", border_width_px == 0),
+            (IDM_BORDER_THIN, "Borda: 1px", border_width_px == 1),
+            (IDM_BORDER_MEDIUM, "Borda: 2px", border_width_px == 2),
+            (IDM_BORDER_THICK, "Borda: 3px", border_width_px == 3),
+        ];
+        for (id, label, checked) in border_items {
+            let label_str = native_interop::wide_str(label);
+            let _ = AppendMenuW(
+                border_menu,
+                if checked { MF_CHECKED } else { MENU_ITEM_FLAGS(0) },
+                id as usize,
+                PCWSTR::from_raw(label_str.as_ptr()),
+            );
+        }
+        let border_label = native_interop::wide_str("Borda");
+        let _ = AppendMenuW(
+            customize_menu,
+            MF_POPUP,
+            border_menu.0 as usize,
+            PCWSTR::from_raw(border_label.as_ptr()),
+        );
+
+        let spacing_menu = CreatePopupMenu().unwrap();
+        let padding_items = [
+            (IDM_PADDING_0, "Preenchimento: 0px", panel_padding_px == 0),
+            (IDM_PADDING_4, "Preenchimento: 4px", panel_padding_px == 4),
+            (IDM_PADDING_8, "Preenchimento: 8px", panel_padding_px == 8),
+        ];
+        for (id, label, checked) in padding_items {
+            let label_str = native_interop::wide_str(label);
+            let _ = AppendMenuW(
+                spacing_menu,
+                if checked { MF_CHECKED } else { MENU_ITEM_FLAGS(0) },
+                id as usize,
+                PCWSTR::from_raw(label_str.as_ptr()),
+            );
+        }
+        let margin_items = [
+            (IDM_MARGIN_0, "Margem: 0px", panel_margin_px == 0),
+            (IDM_MARGIN_2, "Margem: 2px", panel_margin_px == 2),
+            (IDM_MARGIN_4, "Margem: 4px", panel_margin_px == 4),
+        ];
+        for (id, label, checked) in margin_items {
+            let label_str = native_interop::wide_str(label);
+            let _ = AppendMenuW(
+                spacing_menu,
+                if checked { MF_CHECKED } else { MENU_ITEM_FLAGS(0) },
+                id as usize,
+                PCWSTR::from_raw(label_str.as_ptr()),
+            );
+        }
+        let spacing_label = native_interop::wide_str("Espacamento");
+        let _ = AppendMenuW(
+            customize_menu,
+            MF_POPUP,
+            spacing_menu.0 as usize,
+            PCWSTR::from_raw(spacing_label.as_ptr()),
+        );
+
+        let customize_label = native_interop::wide_str("Personalizacao");
         let _ = AppendMenuW(
             settings_menu,
-            version_flags,
-            IDM_VERSION_ACTION as usize,
-            PCWSTR::from_raw(version_str.as_ptr()),
+            MF_POPUP,
+            customize_menu.0 as usize,
+            PCWSTR::from_raw(customize_label.as_ptr()),
         );
 
         let settings_label = native_interop::wide_str(strings.settings);
@@ -2072,7 +2056,17 @@ fn show_context_menu(hwnd: HWND) {
 
 /// Paint for non-embedded fallback (normal WM_PAINT path)
 fn paint(hdc: HDC, hwnd: HWND) {
-    let (is_dark, strings, session_pct, session_text, weekly_pct, weekly_text) = {
+    let (
+        is_dark,
+        strings,
+        session_pct,
+        session_text,
+        weekly_pct,
+        weekly_text,
+        panel_bg,
+        panel_text,
+        panel_indicator,
+    ) = {
         let state = lock_state();
         match state.as_ref() {
             Some(s) => (
@@ -2082,22 +2076,17 @@ fn paint(hdc: HDC, hwnd: HWND) {
                 s.session_text.clone(),
                 s.weekly_percent,
                 s.weekly_text.clone(),
+                s.background_color,
+                s.font_color,
+                s.indicator_color,
             ),
             None => return,
         }
     };
 
-    let accent = Color::from_hex("#D97757");
-    let track = if is_dark {
-        Color::from_hex("#444444")
-    } else {
-        Color::from_hex("#AAAAAA")
-    };
-    let text_color = if is_dark {
-        Color::from_hex("#888888")
-    } else {
-        Color::from_hex("#404040")
-    };
+    let accent = panel_indicator;
+    let track = shade_color(panel_indicator, -88);
+    let text_color = panel_text;
     let bg_color = if is_dark {
         Color::from_hex("#1C1C1C")
     } else {
@@ -2124,6 +2113,7 @@ fn paint(hdc: HDC, hwnd: HWND) {
             height,
             is_dark,
             &bg_color,
+            &panel_bg,
             &text_color,
             &accent,
             &track,
@@ -2140,6 +2130,72 @@ fn paint(hdc: HDC, hwnd: HWND) {
         let _ = DeleteObject(mem_bmp);
         let _ = DeleteDC(mem_dc);
     }
+}
+
+fn apply_widget_size_preset(hwnd: HWND, width_px: i32, height_px: i32) {
+    CUSTOM_WIDGET_WIDTH_PX.store(width_px, Ordering::Relaxed);
+    CUSTOM_WIDGET_HEIGHT_PX.store(height_px, Ordering::Relaxed);
+    {
+        let mut state = lock_state();
+        if let Some(s) = state.as_mut() {
+            s.widget_width_px = width_px;
+            s.widget_height_px = height_px;
+        }
+    }
+    save_state_settings();
+    position_at_taskbar();
+    render_layered();
+    let _ = hwnd;
+}
+
+fn apply_widget_color_preset(
+    background: Option<Color>,
+    font: Option<Color>,
+    indicator: Option<Color>,
+) {
+    {
+        let mut state = lock_state();
+        if let Some(s) = state.as_mut() {
+            if let Some(color) = background {
+                s.background_color = color;
+            }
+            if let Some(color) = font {
+                s.font_color = color;
+            }
+            if let Some(color) = indicator {
+                s.indicator_color = color;
+            }
+        }
+    }
+    save_state_settings();
+    render_layered();
+}
+
+fn apply_widget_frame_preset(hwnd: HWND, border_px: Option<i32>, margin_px: Option<i32>, padding_px: Option<i32>) {
+    {
+        let mut state = lock_state();
+        if let Some(s) = state.as_mut() {
+            if let Some(value) = border_px {
+                let clamped = value.clamp(0, 6);
+                s.border_width_px = clamped;
+                CUSTOM_BORDER_WIDTH_PX.store(clamped, Ordering::Relaxed);
+            }
+            if let Some(value) = margin_px {
+                let clamped = value.clamp(0, 16);
+                s.panel_margin_px = clamped;
+                CUSTOM_PANEL_MARGIN_PX.store(clamped, Ordering::Relaxed);
+            }
+            if let Some(value) = padding_px {
+                let clamped = value.clamp(0, 16);
+                s.panel_padding_px = clamped;
+                CUSTOM_PANEL_PADDING_PX.store(clamped, Ordering::Relaxed);
+            }
+        }
+    }
+    save_state_settings();
+    position_at_taskbar();
+    render_layered();
+    let _ = hwnd;
 }
 
 fn draw_row(
@@ -2232,7 +2288,7 @@ fn draw_row(
             hdc,
             &mut text_wide,
             &mut text_rect,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
         );
     }
 }
@@ -2251,5 +2307,22 @@ fn draw_rounded_rect(hdc: HDC, rect: &RECT, color: &Color, radius: i32) {
         let _ = FillRgn(hdc, rgn, brush);
         let _ = DeleteObject(rgn);
         let _ = DeleteObject(brush);
+    }
+}
+
+fn draw_rounded_outline(hdc: HDC, rect: &RECT, color: &Color, radius: i32, width: i32) {
+    unsafe {
+        let rgn = CreateRoundRectRgn(
+            rect.left,
+            rect.top,
+            rect.right + 1,
+            rect.bottom + 1,
+            radius * 2,
+            radius * 2,
+        );
+        let brush = CreateSolidBrush(COLORREF(color.to_colorref()));
+        let _ = FrameRgn(hdc, rgn, brush, width.max(1), width.max(1));
+        let _ = DeleteObject(brush);
+        let _ = DeleteObject(rgn);
     }
 }

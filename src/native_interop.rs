@@ -17,7 +17,6 @@ pub const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
 pub const TIMER_POLL: usize = 1;
 pub const TIMER_COUNTDOWN: usize = 2;
 pub const TIMER_RESET_POLL: usize = 3;
-pub const TIMER_UPDATE_CHECK: usize = 4;
 
 // Custom messages
 pub const WM_APP: u32 = 0x8000;
@@ -152,7 +151,7 @@ pub fn colorref(r: u8, g: u8, b: u8) -> u32 {
 }
 
 /// Color helper
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Color {
     pub r: u8,
     pub g: u8,

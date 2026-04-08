@@ -1,145 +1,116 @@
-![Windows](https://img.shields.io/badge/platform-Windows-blue)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+![Windows](https://img.shields.io/badge/plataforma-Windows-blue)
+[![Licenca: MIT](https://img.shields.io/badge/Licenca-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-# Claude Code Usage Monitor
+# Claude Code Usage Monitor (Fork Customizado)
 
-![Screenshot](.github/animation.gif)
+Projeto em Windows para monitorar consumo do Claude Code direto na barra de tarefas.
 
-A lightweight Windows taskbar widget for people already using Claude Code.
+## Sobre Este Fork
 
-It sits in your taskbar and shows how much of your Claude Code usage window you have left, without needing to open the terminal or the Claude site.
+Este repositorio e um fork/customizacao do projeto original Claude Code Usage Monitor.
 
-## What You Get
+Objetivo deste fork:
+- Interface totalmente em portugues do Brasil
+- Visual do widget ajustado (mais compacto e com estilo de capsula)
+- Customizacao visual direto no menu de contexto
+- Remocao da funcionalidade de verificacao/acao de atualizacoes no menu
 
-- A **5h** bar for your current 5-hour Claude usage window
-- A **7d** bar for your current 7-day window
-- A live countdown until each limit resets
-- A small native widget that lives directly in the Windows taskbar
-- A **system tray icon** showing your usage percentage as a color-coded badge
-- Left-click the tray icon to toggle the taskbar widget on or off
-- Right-click options for refresh, update frequency, language, startup, and updates
+## O Que Foi Alterado Neste Fork
 
-## Who This Is For
+1. Interface em pt-BR
+- Idioma portugues do Brasil adicionado na localizacao
+- Aplicacao configurada para usar pt-BR como idioma principal
+- Menus de customizacao traduzidos para portugues
 
-This app is for Windows users who already have **Claude Code (CLI or App) installed and signed in**.
+2. Design do widget
+- Altura ajustada para layout mais compacto
+- Painel arredondado com melhor contraste visual
+- Indicadores e textos refinados para leitura na barra de tarefas
 
-It works best if you want a simple "how close am I to the limit?" display that is always visible.
+3. Menu de customizacao
+- Tamanho (px): Automatico, 320x38, 360x44, 400x50, 440x56
+- Cores: fundo, fonte e indicadores
+- Borda: 0px, 1px, 2px, 3px
+- Espacamento:
+  - Preenchimento: 0px, 4px, 8px
+  - Margem: 0px, 2px, 4px
 
-## Requirements
+4. Atualizacoes
+- Fluxo de verificacao automatica/manual de atualizacoes removido do menu
 
-- Windows 10 or Windows 11
-- Claude Code (CLI or App) installed and authenticated
+## Requisitos
 
-If you use Claude Code through WSL, that is supported too. The monitor can read your Claude Code credentials from Windows or from your WSL environment.
+- Windows 10 ou Windows 11
+- Claude Code (CLI ou App) instalado e autenticado
 
-## Install
+WSL tambem e suportado para leitura de credenciais, quando aplicavel.
 
-Install the latest version from WinGet:
+## Como Executar
+
+### Opcao 1: desenvolvimento
 
 ```powershell
-winget install CodeZeno.ClaudeCodeUsageMonitor
+cargo run
 ```
 
-If you prefer not to use WinGet, you can still download the latest `claude-code-usage-monitor.exe` from the [Releases](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/releases) page and run it directly.
-
-## Use
-
-After installing with WinGet, run:
+### Opcao 2: gerar executavel release
 
 ```powershell
-claude-code-usage-monitor
+cargo build --release
 ```
 
-Once running, it will appear in your taskbar and as a tray icon in the notification area.
+Executavel gerado em:
 
-- Drag the left divider to move the taskbar widget
-- Right-click the taskbar widget or tray icon for refresh, update frequency, Start with Windows, reset position, language, updates, and exit
-- Left-click the tray icon to toggle the taskbar widget on or off
-- Enable `Start with Windows` from the right-click menu if you want it to launch automatically when you sign in
+```text
+target/release/claude-code-usage-monitor.exe
+```
 
-### System Tray Icon
+## Como Usar
 
-The tray icon shows your current 5-hour usage as a color-coded percentage badge.
+Depois de iniciar o app:
+- O widget aparece na barra de tarefas
+- O icone fica na bandeja do sistema
+- Clique esquerdo no icone: mostrar/ocultar widget
+- Clique direito no widget ou no icone: abrir menu
 
-Hovering over the tray icon shows a tooltip with both your 5h and 7d usage.
+No menu, voce pode:
+- Atualizar os dados manualmente
+- Ajustar frequencia de atualizacao
+- Configurar inicializacao com Windows
+- Redefinir posicao
+- Alterar visual do widget (tamanho, cores, borda, margem e preenchimento)
+- Encerrar o app
 
-## Diagnostics
+## Diagnostico
 
-If you need to troubleshoot startup or visibility issues, run:
+Para coletar logs de diagnostico:
 
 ```powershell
 claude-code-usage-monitor --diagnose
 ```
 
-This writes a log file to:
+Arquivo de log:
 
 ```text
-%TEMP%\claude-code-usage-monitor.log
+%TEMP%/claude-code-usage-monitor.log
 ```
 
-Settings are saved to:
+Configuracoes persistidas em:
 
 ```text
-%APPDATA%\ClaudeCodeUsageMonitor\settings.json
+%APPDATA%/ClaudeCodeUsageMonitor/settings.json
 ```
 
-## Account Support
+## Privacidade
 
-This app works with the same account types that Claude Code itself supports.
+Este projeto e open source.
 
-As of **March 19, 2026**, Anthropic's Claude Code setup documentation says:
+O app:
+- Le credenciais locais do Claude Code para autenticacao
+- Consulta endpoints da Anthropic para obter uso/limites
+- Nao envia credenciais para servidores de terceiros
+- Nao coleta telemetria propria
 
-- **Supported:** Pro, Max, Teams, Enterprise, and Console accounts
-- **Not supported:** the free Claude.ai plan
+## Licenca
 
-If Anthropic changes Claude Code availability in the future, this app should follow whatever Claude Code supports, as long as the usage data remains exposed through the same authenticated endpoints.
-
-## Privacy And Security
-
-This project is **open source**, so you can inspect exactly what it does.
-
-What the app reads:
-
-- Your local Claude Code OAuth credentials from `~/.claude/.credentials.json`
-- If needed, the same credentials file inside an installed WSL distro
-
-What the app sends over the network:
-
-- Requests to Anthropic's Claude endpoints to read your usage and rate-limit information
-- Requests to GitHub only if you use the app's update check / self-update feature
-
-What the app stores locally:
-
-- Widget position
-- Polling frequency
-- Language preference
-- Last update check time
-
-What it does **not** do:
-
-- It does not send your credentials to any other server
-- It does not use a separate backend service
-- It does not collect analytics or telemetry
-- It does not upload your project files
-
-Notes:
-
-- If your Claude Code token is expired, the app may ask the local Claude CLI to refresh it in the background
-- Portable installs can update themselves by downloading the latest release from this repository
-
-## How It Works
-
-The monitor:
-
-1. Finds your Claude Code login credentials
-2. Reads your current usage from Anthropic
-3. Shows the result directly in the Windows taskbar
-4. Refreshes periodically in the background
-
-If the newer usage endpoint is unavailable, it can fall back to reading the rate-limit headers returned by Claude's Messages API.
-
-## Open Source
-
-This project is licensed under MIT.
-
-If you want to inspect the behavior or audit the code, everything is in this repository.
+MIT.

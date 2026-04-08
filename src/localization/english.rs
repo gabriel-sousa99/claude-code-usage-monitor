@@ -1,7 +1,5 @@
 use super::Strings;
 
-pub(super) const UPDATE_VIA_WINGET_LABEL: &str = "Update via WinGet";
-
 pub(super) const STRINGS: Strings = Strings {
     window_title: "Claude Code Usage Monitor",
     refresh: "Refresh",
@@ -15,17 +13,6 @@ pub(super) const STRINGS: Strings = Strings {
     reset_position: "Reset Position",
     language: "Language",
     system_default: "System Default",
-    check_for_updates: "Check for Updates",
-    checking_for_updates: "Checking for Updates...",
-    updates: "Updates",
-    update_in_progress: "An update check is already in progress.",
-    up_to_date: "You already have the latest version.",
-    up_to_date_short: "Up to date",
-    update_failed: "Unable to update automatically",
-    applying_update: "Applying update...",
-    update_to: "Update to",
-    update_available: "Update available",
-    update_prompt_now: "Version {version} is available. Do you want to update now?",
     exit: "Exit",
     show_widget: "Show Widget",
     session_window: "5h",

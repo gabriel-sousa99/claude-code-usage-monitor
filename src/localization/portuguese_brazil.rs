@@ -1,0 +1,25 @@
+use super::Strings;
+
+pub(super) const STRINGS: Strings = Strings {
+    window_title: "Monitor de uso do Claude Code",
+    refresh: "Atualizar",
+    update_frequency: "Frequência de atualização",
+    one_minute: "1 minuto",
+    five_minutes: "5 minutos",
+    fifteen_minutes: "15 minutos",
+    one_hour: "1 hora",
+    settings: "Configurações",
+    start_with_windows: "Iniciar com o Windows",
+    reset_position: "Redefinir posição",
+    language: "Idioma",
+    system_default: "Padrão do sistema",
+    exit: "Sair",
+    show_widget: "Mostrar widget",
+    session_window: "5h",
+    weekly_window: "7d",
+    now: "agora",
+    day_suffix: "d",
+    hour_suffix: "h",
+    minute_suffix: "m",
+    second_suffix: "s",
+};
