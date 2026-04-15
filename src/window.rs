@@ -621,12 +621,12 @@ const SEGMENT_COUNT: i32 = 10;
 const CORNER_RADIUS: i32 = 4;
 
 const LEFT_DIVIDER_W: i32 = 3;
-const DIVIDER_RIGHT_MARGIN: i32 = 10;
+const DIVIDER_RIGHT_MARGIN: i32 = 8;
 const LABEL_WIDTH: i32 = 18;
 const LABEL_RIGHT_MARGIN: i32 = 8;
 const BAR_RIGHT_MARGIN: i32 = 8;
 const TEXT_WIDTH: i32 = 72;
-const RIGHT_MARGIN: i32 = 12;
+const RIGHT_MARGIN: i32 = 8;
 const WIDGET_HEIGHT: i32 = 42;
 
 fn base_widget_width() -> i32 {
