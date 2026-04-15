@@ -674,37 +674,55 @@ pub fn time_until_display_change(resets_at: Option<SystemTime>) -> Option<Durati
 }
 
 fn format_countdown_from_secs(total_secs: u64, strings: Strings) -> String {
-    let total_mins = total_secs / 60;
-    let total_hours = total_secs / 3600;
     let total_days = total_secs / 86400;
+    let remaining_hours = (total_secs % 86400) / 3600;
+    let remaining_mins = (total_secs % 3600) / 60;
 
     if total_days >= 1 {
-        format!("{total_days}{}", strings.day_suffix)
-    } else if total_hours >= 1 {
-        format!("{total_hours}{}", strings.hour_suffix)
-    } else if total_mins >= 1 {
-        format!("{total_mins}{}", strings.minute_suffix)
+        if remaining_hours >= 1 {
+            format!(
+                "{total_days}{} {remaining_hours}{}",
+                strings.day_suffix, strings.hour_suffix
+            )
+        } else {
+            format!("{total_days}{}", strings.day_suffix)
+        }
+    } else if remaining_hours >= 1 || total_secs >= 3600 {
+        if remaining_mins >= 1 {
+            format!(
+                "{remaining_hours}{} {remaining_mins}{}",
+                strings.hour_suffix, strings.minute_suffix
+            )
+        } else {
+            format!("{remaining_hours}{}", strings.hour_suffix)
+        }
+    } else if remaining_mins >= 1 {
+        format!("{remaining_mins}{}", strings.minute_suffix)
     } else {
         format!("{total_secs}{}", strings.second_suffix)
     }
 }
 
 fn time_until_display_change_from_secs(total_secs: u64) -> Duration {
-    let total_mins = total_secs / 60;
-    let total_hours = total_secs / 3600;
     let total_days = total_secs / 86400;
+    let remaining_mins = (total_secs % 3600) / 60;
 
-    let current_bucket_start = if total_days >= 1 {
-        total_days * 86400
-    } else if total_hours >= 1 {
-        total_hours * 3600
-    } else if total_mins >= 1 {
-        total_mins * 60
+    if total_days >= 1 {
+        // Refresh when the remaining hours change (every hour)
+        let secs_into_hour = total_secs % 3600;
+        Duration::from_secs(secs_into_hour + 1)
+    } else if total_secs >= 3600 {
+        // Refresh when remaining minutes change (every minute)
+        let secs_into_min = total_secs % 60;
+        Duration::from_secs(secs_into_min + 1)
+    } else if remaining_mins >= 1 {
+        // Refresh when minute changes
+        let secs_into_min = total_secs % 60;
+        Duration::from_secs(secs_into_min + 1)
     } else {
-        total_secs
-    };
-
-    Duration::from_secs(total_secs.saturating_sub(current_bucket_start) + 1)
+        // Refresh every second
+        Duration::from_secs(1)
+    }
 }
 
 /// Returns true if either section has reached "now" (reset time has passed).

@@ -71,8 +71,6 @@ struct AppState {
     drag_start_offset: i32,
 
     widget_visible: bool,
-    widget_width_px: i32,
-    widget_height_px: i32,
     background_color: Color,
     font_color: Color,
     indicator_color: Color,
@@ -149,11 +147,7 @@ const IDM_SCHEME_TRANSPARENT_DARK: u16 = 274;
 const IDM_LANG_SYSTEM: u16 = 40;
 const IDM_LANG_ENGLISH: u16 = 41;
 const IDM_LANG_PORTUGUESE_BRAZIL: u16 = 47;
-const IDM_SIZE_AUTO: u16 = 200;
-const IDM_SIZE_COMPACT: u16 = 201;
-const IDM_SIZE_DEFAULT: u16 = 202;
-const IDM_SIZE_LARGE: u16 = 203;
-const IDM_SIZE_XL: u16 = 204;
+const IDM_RADIUS_NONE: u16 = 284;
 const IDM_BG_CHARCOAL: u16 = 210;
 const IDM_BG_SLATE: u16 = 211;
 const IDM_BG_BLACK: u16 = 212;
@@ -188,8 +182,6 @@ const DEFAULT_PANEL_RADIUS_PX: i32 = 10;
 
 /// Current system DPI (96 = 100% scaling, 144 = 150%, 192 = 200%, etc.)
 static CURRENT_DPI: AtomicU32 = AtomicU32::new(96);
-static CUSTOM_WIDGET_WIDTH_PX: AtomicI32 = AtomicI32::new(0);
-static CUSTOM_WIDGET_HEIGHT_PX: AtomicI32 = AtomicI32::new(0);
 static CUSTOM_BORDER_WIDTH_PX: AtomicI32 = AtomicI32::new(DEFAULT_BORDER_PX);
 static CUSTOM_PANEL_MARGIN_PX: AtomicI32 = AtomicI32::new(DEFAULT_PANEL_MARGIN_PX);
 static CUSTOM_PANEL_PADDING_PX: AtomicI32 = AtomicI32::new(DEFAULT_PANEL_PADDING_PX);
@@ -277,10 +269,6 @@ struct SettingsFile {
     panel_radius_px: i32,
     #[serde(default = "default_widget_visible")]
     widget_visible: bool,
-    #[serde(default)]
-    widget_width_px: i32,
-    #[serde(default)]
-    widget_height_px: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     background_color_hex: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -298,8 +286,6 @@ impl Default for SettingsFile {
             poll_interval_ms: default_poll_interval(),
             language: None,
             widget_visible: true,
-            widget_width_px: 0,
-            widget_height_px: 0,
             background_color_hex: None,
             font_color_hex: None,
             indicator_color_hex: None,
@@ -368,8 +354,6 @@ fn save_state_settings() {
                 }
                 .to_string()),
             widget_visible: s.widget_visible,
-            widget_width_px: s.widget_width_px,
-            widget_height_px: s.widget_height_px,
             background_color_hex: Some(color_to_hex(s.background_color)),
             font_color_hex: Some(color_to_hex(s.font_color)),
             indicator_color_hex: Some(color_to_hex(s.indicator_color)),
@@ -641,7 +625,7 @@ const DIVIDER_RIGHT_MARGIN: i32 = 10;
 const LABEL_WIDTH: i32 = 18;
 const LABEL_RIGHT_MARGIN: i32 = 8;
 const BAR_RIGHT_MARGIN: i32 = 8;
-const TEXT_WIDTH: i32 = 62;
+const TEXT_WIDTH: i32 = 72;
 const RIGHT_MARGIN: i32 = 12;
 const WIDGET_HEIGHT: i32 = 42;
 
@@ -662,13 +646,7 @@ fn total_widget_width() -> i32 {
         + CUSTOM_PANEL_PADDING_PX.load(Ordering::Relaxed))
         .max(0)
         * 2;
-    let custom = CUSTOM_WIDGET_WIDTH_PX.load(Ordering::Relaxed);
-    let min_width = base_widget_width() + panel_extra;
-    if custom > 0 {
-        custom.max(min_width)
-    } else {
-        min_width
-    }
+    base_widget_width() + panel_extra
 }
 
 fn total_widget_height() -> i32 {
@@ -676,14 +654,7 @@ fn total_widget_height() -> i32 {
         + CUSTOM_PANEL_PADDING_PX.load(Ordering::Relaxed))
         .max(0)
         * 2;
-    let custom = CUSTOM_WIDGET_HEIGHT_PX.load(Ordering::Relaxed);
-    let min_height = sc(36) + panel_extra;
-    let base = sc(WIDGET_HEIGHT) + panel_extra;
-    if custom > 0 {
-        custom.max(min_height)
-    } else {
-        base
-    }
+    sc(WIDGET_HEIGHT) + panel_extra
 }
 
 pub fn run() {
@@ -740,8 +711,6 @@ pub fn run() {
         let settings = load_settings();
         let language_override = Some(LanguageId::PortugueseBrazil);
         let language = LanguageId::PortugueseBrazil;
-        CUSTOM_WIDGET_WIDTH_PX.store(settings.widget_width_px, Ordering::Relaxed);
-        CUSTOM_WIDGET_HEIGHT_PX.store(settings.widget_height_px, Ordering::Relaxed);
         CUSTOM_BORDER_WIDTH_PX.store(settings.border_width_px, Ordering::Relaxed);
         CUSTOM_PANEL_MARGIN_PX.store(settings.panel_margin_px, Ordering::Relaxed);
         CUSTOM_PANEL_PADDING_PX.store(settings.panel_padding_px, Ordering::Relaxed);
@@ -841,8 +810,6 @@ pub fn run() {
                 drag_start_mouse_x: 0,
                 drag_start_offset: 0,
                 widget_visible: settings.widget_visible,
-                widget_width_px: settings.widget_width_px,
-                widget_height_px: settings.widget_height_px,
                 background_color,
                 font_color,
                 indicator_color,
@@ -1767,18 +1734,6 @@ unsafe extern "system" fn wnd_proc(
                     save_state_settings();
                     render_layered();
                 }
-                IDM_SIZE_AUTO | IDM_SIZE_COMPACT | IDM_SIZE_DEFAULT | IDM_SIZE_LARGE
-                | IDM_SIZE_XL => {
-                    let (width, height) = match id {
-                        IDM_SIZE_AUTO => (0, 0),
-                        IDM_SIZE_COMPACT => (320, 38),
-                        IDM_SIZE_DEFAULT => (360, 44),
-                        IDM_SIZE_LARGE => (400, 50),
-                        IDM_SIZE_XL => (440, 56),
-                        _ => (0, 0),
-                    };
-                    apply_widget_size_preset(hwnd, width, height);
-                }
                 IDM_BG_CHARCOAL | IDM_BG_SLATE | IDM_BG_BLACK => {
                     let bg = match id {
                         IDM_BG_CHARCOAL => Color::from_hex("#161616"),
@@ -1849,8 +1804,10 @@ unsafe extern "system" fn wnd_proc(
                     };
                     apply_widget_frame_preset(hwnd, None, Some(margin), None, None);
                 }
-                IDM_RADIUS_6 | IDM_RADIUS_10 | IDM_RADIUS_14 | IDM_RADIUS_18 => {
+                IDM_RADIUS_NONE | IDM_RADIUS_6 | IDM_RADIUS_10 | IDM_RADIUS_14
+                | IDM_RADIUS_18 => {
                     let radius = match id {
+                        IDM_RADIUS_NONE => 0,
                         IDM_RADIUS_6 => 6,
                         IDM_RADIUS_10 => 10,
                         IDM_RADIUS_14 => 14,
@@ -1901,8 +1858,6 @@ fn show_context_menu(hwnd: HWND) {
             strings,
             language_override,
             widget_visible,
-            widget_width_px,
-            widget_height_px,
             background_color,
             font_color,
             indicator_color,
@@ -1919,8 +1874,6 @@ fn show_context_menu(hwnd: HWND) {
                     s.language.strings(),
                     s.language_override,
                     s.widget_visible,
-                    s.widget_width_px,
-                    s.widget_height_px,
                     s.background_color,
                     s.font_color,
                     s.indicator_color,
@@ -1935,8 +1888,6 @@ fn show_context_menu(hwnd: HWND) {
                     LanguageId::PortugueseBrazil.strings(),
                     None,
                     true,
-                    0,
-                    0,
                     Color::from_hex("#161616"),
                     Color::from_hex("#EAEAEA"),
                     Color::from_hex("#D97757"),
@@ -2057,31 +2008,6 @@ fn show_context_menu(hwnd: HWND) {
 
         let customize_menu = CreatePopupMenu().unwrap();
 
-        let size_menu = CreatePopupMenu().unwrap();
-        let size_items = [
-            (IDM_SIZE_AUTO, "Tamanho: Automatico", widget_width_px == 0 && widget_height_px == 0),
-            (IDM_SIZE_COMPACT, "Tamanho: 320x38", widget_width_px == 320 && widget_height_px == 38),
-            (IDM_SIZE_DEFAULT, "Tamanho: 360x44", widget_width_px == 360 && widget_height_px == 44),
-            (IDM_SIZE_LARGE, "Tamanho: 400x50", widget_width_px == 400 && widget_height_px == 50),
-            (IDM_SIZE_XL, "Tamanho: 440x56", widget_width_px == 440 && widget_height_px == 56),
-        ];
-        for (id, label, checked) in size_items {
-            let label_str = native_interop::wide_str(label);
-            let _ = AppendMenuW(
-                size_menu,
-                if checked { MF_CHECKED } else { MENU_ITEM_FLAGS(0) },
-                id as usize,
-                PCWSTR::from_raw(label_str.as_ptr()),
-            );
-        }
-        let size_label = native_interop::wide_str("Tamanho (px)");
-        let _ = AppendMenuW(
-            customize_menu,
-            MF_POPUP,
-            size_menu.0 as usize,
-            PCWSTR::from_raw(size_label.as_ptr()),
-        );
-
         let colors_menu = CreatePopupMenu().unwrap();
         let bg_items = [
             (IDM_BG_CHARCOAL, "Fundo: Carvao", background_color == Color::from_hex("#161616")),
@@ -2159,6 +2085,7 @@ fn show_context_menu(hwnd: HWND) {
 
         let radius_menu = CreatePopupMenu().unwrap();
         let radius_items = [
+            (IDM_RADIUS_NONE, "Raio: Nenhum", panel_radius_px == 0),
             (IDM_RADIUS_6, "Raio: 6px", panel_radius_px == 6),
             (IDM_RADIUS_10, "Raio: 10px", panel_radius_px == 10),
             (IDM_RADIUS_14, "Raio: 14px", panel_radius_px == 14),
@@ -2372,21 +2299,6 @@ fn paint(hdc: HDC, hwnd: HWND) {
     }
 }
 
-fn apply_widget_size_preset(hwnd: HWND, width_px: i32, height_px: i32) {
-    CUSTOM_WIDGET_WIDTH_PX.store(width_px, Ordering::Relaxed);
-    CUSTOM_WIDGET_HEIGHT_PX.store(height_px, Ordering::Relaxed);
-    {
-        let mut state = lock_state();
-        if let Some(s) = state.as_mut() {
-            s.widget_width_px = width_px;
-            s.widget_height_px = height_px;
-        }
-    }
-    save_state_settings();
-    position_at_taskbar();
-    render_layered();
-    let _ = hwnd;
-}
 
 fn apply_widget_color_preset(
     background: Option<Color>,
