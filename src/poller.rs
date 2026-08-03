@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
@@ -14,6 +15,32 @@ const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const MODEL_FALLBACK_CHAIN: &[&str] = &["claude-3-haiku-20240307", "claude-haiku-4-5-20251001"];
+
+/// Safety margin so a cached token is never handed out moments before it expires.
+const TOKEN_EXPIRY_MARGIN_MS: i64 = 60_000;
+
+/// Consecutive failures tolerated while using the cached token before we drop it and
+/// read the credentials again. Transient network errors are far more common than a
+/// revoked token, and dropping the cache on the first one would bring back the wakeups
+/// this cache exists to prevent.
+const CACHE_FAILURE_TOLERANCE: u32 = 2;
+
+struct CredentialCache {
+    credentials: Option<Credentials>,
+    consecutive_failures: u32,
+}
+
+/// Last known-good credentials, reused across polls.
+///
+/// Reading credentials costs a `wsl.exe -d <distro>` call, which *starts the distro* when
+/// it is not running — the whole VM boots (systemd, docker, containerd, php-fpm) just to
+/// `cat` a 1 KB file, then shuts down seconds later. The OAuth token is valid for hours
+/// while polls run every few minutes, so keeping it here is what stops the monitor from
+/// waking WSL on every cycle.
+static CREDENTIAL_CACHE: Mutex<CredentialCache> = Mutex::new(CredentialCache {
+    credentials: None,
+    consecutive_failures: 0,
+});
 
 #[derive(Debug)]
 pub enum PollError {
@@ -35,6 +62,23 @@ struct UsageBucket {
 }
 
 pub fn poll() -> Result<UsageData, PollError> {
+    // Reuse the token from the previous poll whenever it is still valid: reading it again
+    // would spawn `wsl.exe -d <distro>`, which boots the whole distro if it is stopped.
+    if let Some(creds) = cached_credentials() {
+        match fetch_usage_with_fallback(&creds.access_token) {
+            Ok(data) => {
+                clear_cached_failures();
+                return Ok(data);
+            }
+            Err(error) => {
+                if !note_cached_failure() {
+                    return Err(error);
+                }
+                diagnose::log("cached token failed repeatedly; reading credentials again");
+            }
+        }
+    }
+
     let mut creds = match read_credentials() {
         Some(c) => c,
         None => {
@@ -60,7 +104,67 @@ pub fn poll() -> Result<UsageData, PollError> {
         }
     }
 
+    store_credentials(&creds);
     fetch_usage_with_fallback(&creds.access_token)
+}
+
+/// Return the cached token when it is still usable, so the poll can skip reading the
+/// credentials — and therefore skip starting the WSL distro.
+fn cached_credentials() -> Option<Credentials> {
+    let cache = CREDENTIAL_CACHE.lock().ok()?;
+    let creds = cache.credentials.as_ref()?;
+    cache_entry_is_usable(creds.expires_at, now_millis()).then(|| creds.clone())
+}
+
+fn store_credentials(creds: &Credentials) {
+    if let Ok(mut cache) = CREDENTIAL_CACHE.lock() {
+        cache.credentials = Some(creds.clone());
+        cache.consecutive_failures = 0;
+    }
+}
+
+fn clear_cached_failures() {
+    if let Ok(mut cache) = CREDENTIAL_CACHE.lock() {
+        cache.consecutive_failures = 0;
+    }
+}
+
+/// Record a failed fetch made with the cached token. Returns `true` once the failures
+/// reach [`CACHE_FAILURE_TOLERANCE`], meaning the cache was dropped and the caller should
+/// read the credentials again.
+fn note_cached_failure() -> bool {
+    let Ok(mut cache) = CREDENTIAL_CACHE.lock() else {
+        return false;
+    };
+
+    cache.consecutive_failures = cache.consecutive_failures.saturating_add(1);
+    if cache.consecutive_failures < CACHE_FAILURE_TOLERANCE {
+        return false;
+    }
+
+    cache.credentials = None;
+    cache.consecutive_failures = 0;
+    true
+}
+
+/// Whether a cached token is still worth reusing.
+///
+/// An unknown expiry (`None`) is treated as unusable on purpose: we would rather pay one
+/// distro wakeup than pin a token whose lifetime we cannot reason about. Note this differs
+/// from [`is_token_expired`], where `None` counts as valid — that function ranks freshly
+/// read credentials in `choose_best_credentials`, a different decision.
+fn cache_entry_is_usable(expires_at: Option<i64>, now_ms: i64) -> bool {
+    match expires_at {
+        Some(expiry) => now_ms + TOKEN_EXPIRY_MARGIN_MS < expiry,
+        None => false,
+    }
+}
+
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 /// Invoke the Claude CLI with a minimal prompt to force its internal
@@ -381,6 +485,7 @@ fn unix_to_system_time(unix_secs: Option<i64>) -> Option<SystemTime> {
     Some(UNIX_EPOCH + Duration::from_secs(secs as u64))
 }
 
+#[derive(Clone)]
 struct Credentials {
     access_token: String,
     expires_at: Option<i64>,
@@ -730,4 +835,32 @@ pub fn is_past_reset(data: &UsageData) -> bool {
     let now = SystemTime::now();
     let past = |s: &UsageSection| matches!(s.resets_at, Some(t) if now.duration_since(t).is_ok());
     past(&data.session) || past(&data.weekly)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ONE_HOUR_MS: i64 = 3_600_000;
+
+    #[test]
+    fn token_with_headroom_is_reused() {
+        assert!(cache_entry_is_usable(Some(ONE_HOUR_MS), 0));
+    }
+
+    #[test]
+    fn expired_token_is_discarded() {
+        assert!(!cache_entry_is_usable(Some(ONE_HOUR_MS), ONE_HOUR_MS + 1));
+    }
+
+    #[test]
+    fn token_inside_expiry_margin_is_discarded() {
+        let expiry = TOKEN_EXPIRY_MARGIN_MS / 2;
+        assert!(!cache_entry_is_usable(Some(expiry), 0));
+    }
+
+    #[test]
+    fn token_without_known_expiry_is_discarded() {
+        assert!(!cache_entry_is_usable(None, 0));
+    }
 }
