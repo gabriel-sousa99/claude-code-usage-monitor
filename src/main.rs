@@ -31,7 +31,7 @@ fn main() {
             diagnose::init()
         };
         match init_result {
-            Ok(path) => diagnose::log(format!("startup args={args:?} log_path={}", path.display())),
+            Ok(path) => diagnose::log(format!("startup log_path={}", path.display())),
             Err(error) => {
                 // Logging may not be available yet, but keep startup behavior unchanged.
                 let _ = error;
