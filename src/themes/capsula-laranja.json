@@ -192,7 +192,7 @@
             "value": "cursor.session.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#D97757FF"
+              "color": "#7C5CFFFF"
             },
             "track": {
               "color": "#2A2A2AFF"
@@ -239,7 +239,7 @@
             "value": "cursor.session.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#D97757FF"
+              "color": "#7C5CFFFF"
             },
             "track": {
               "color": "#2A2A2AFF"
@@ -286,7 +286,7 @@
             "value": "cursor.weekly.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#D97757FF"
+              "color": "#7C5CFFFF"
             },
             "track": {
               "color": "#2A2A2AFF"
@@ -333,7 +333,7 @@
             "value": "cursor.weekly.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#D97757FF"
+              "color": "#7C5CFFFF"
             },
             "track": {
               "color": "#2A2A2AFF"
@@ -637,7 +637,7 @@
             "value": "codex.five_hour.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#D97757FF"
+              "color": "#10A37FFF"
             },
             "track": {
               "color": "#2A2A2AFF"
@@ -684,7 +684,7 @@
             "value": "codex.five_hour.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#D97757FF"
+              "color": "#10A37FFF"
             },
             "track": {
               "color": "#2A2A2AFF"
@@ -731,7 +731,7 @@
             "value": "codex.weekly.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#D97757FF"
+              "color": "#10A37FFF"
             },
             "track": {
               "color": "#2A2A2AFF"
@@ -778,7 +778,7 @@
             "value": "codex.weekly.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#D97757FF"
+              "color": "#10A37FFF"
             },
             "track": {
               "color": "#2A2A2AFF"
@@ -833,7 +833,7 @@
             "value": "antigravity.session.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#D97757FF"
+              "color": "#4285F4FF"
             },
             "track": {
               "color": "#2A2A2AFF"
@@ -880,7 +880,7 @@
             "value": "antigravity.session.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#D97757FF"
+              "color": "#4285F4FF"
             },
             "track": {
               "color": "#2A2A2AFF"
@@ -927,7 +927,7 @@
             "value": "antigravity.weekly.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#D97757FF"
+              "color": "#4285F4FF"
             },
             "track": {
               "color": "#2A2A2AFF"
@@ -974,7 +974,7 @@
             "value": "antigravity.weekly.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#D97757FF"
+              "color": "#4285F4FF"
             },
             "track": {
               "color": "#2A2A2AFF"
@@ -1029,7 +1029,7 @@
             "value": "opencode.session.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#D97757FF"
+              "color": "#4CAF50FF"
             },
             "track": {
               "color": "#2A2A2AFF"
@@ -1076,7 +1076,7 @@
             "value": "opencode.session.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#D97757FF"
+              "color": "#4CAF50FF"
             },
             "track": {
               "color": "#2A2A2AFF"
@@ -1123,7 +1123,7 @@
             "value": "opencode.weekly.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#D97757FF"
+              "color": "#4CAF50FF"
             },
             "track": {
               "color": "#2A2A2AFF"
@@ -1170,7 +1170,7 @@
             "value": "opencode.weekly.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#D97757FF"
+              "color": "#4CAF50FF"
             },
             "track": {
               "color": "#2A2A2AFF"
@@ -1317,7 +1317,7 @@
             "value": "codex.credits.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#D97757FF",
+              "color": "#10A37FFF",
               "opacity": "1"
             },
             "track": {
@@ -1367,7 +1367,7 @@
             "value": "codex.credits.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#D97757FF",
+              "color": "#10A37FFF",
               "opacity": "1"
             },
             "track": {

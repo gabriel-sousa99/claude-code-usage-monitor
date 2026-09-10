@@ -184,20 +184,20 @@
           "name": "dark Cursor Auto segments",
           "render": "system.dark",
           "parent": "cursor-provider",
-          "y": "5",
+          "y": "8",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "cursor.session.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#F5F5F5FF"
+              "color": "#7C5CFFFF"
             },
             "track": {
               "color": "#444444FF"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -209,7 +209,7 @@
           "render": "system.dark",
           "parent": "cursor-provider",
           "x": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4",
-          "y": "5",
+          "y": "6",
           "width": "90",
           "height": "13",
           "content": {
@@ -231,20 +231,20 @@
           "name": "light Cursor Auto segments",
           "render": "1 - system.dark",
           "parent": "cursor-provider",
-          "y": "5",
+          "y": "8",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "cursor.session.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#1A1A1AFF"
+              "color": "#7C5CFFFF"
             },
             "track": {
               "color": "#AAAAAAFF"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -256,7 +256,7 @@
           "render": "1 - system.dark",
           "parent": "cursor-provider",
           "x": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4",
-          "y": "5",
+          "y": "6",
           "width": "90",
           "height": "13",
           "content": {
@@ -278,20 +278,20 @@
           "name": "dark Cursor API segments",
           "render": "system.dark",
           "parent": "cursor-provider",
-          "y": "28",
+          "y": "30",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "cursor.weekly.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#F5F5F5FF"
+              "color": "#7C5CFFFF"
             },
             "track": {
               "color": "#444444FF"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -325,20 +325,20 @@
           "name": "light Cursor API segments",
           "render": "1 - system.dark",
           "parent": "cursor-provider",
-          "y": "28",
+          "y": "30",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "cursor.weekly.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#1A1A1AFF"
+              "color": "#7C5CFFFF"
             },
             "track": {
               "color": "#AAAAAAFF"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -433,9 +433,9 @@
           "name": "dark Claude Code 5-hour segments",
           "render": "system.dark",
           "parent": "claude-provider",
-          "y": "5",
+          "y": "8",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "claude.session.percentage",
@@ -446,7 +446,7 @@
             "track": {
               "color": "#444444FF"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -458,7 +458,7 @@
           "render": "system.dark",
           "parent": "claude-provider",
           "x": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4",
-          "y": "5",
+          "y": "6",
           "width": "62",
           "height": "13",
           "content": {
@@ -480,9 +480,9 @@
           "name": "light Claude Code 5-hour segments",
           "render": "1 - system.dark",
           "parent": "claude-provider",
-          "y": "5",
+          "y": "8",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "claude.session.percentage",
@@ -493,7 +493,7 @@
             "track": {
               "color": "#AAAAAAFF"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -505,7 +505,7 @@
           "render": "1 - system.dark",
           "parent": "claude-provider",
           "x": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4",
-          "y": "5",
+          "y": "6",
           "width": "62",
           "height": "13",
           "content": {
@@ -527,9 +527,9 @@
           "name": "dark Claude Code 7-day segments",
           "render": "system.dark",
           "parent": "claude-provider",
-          "y": "28",
+          "y": "30",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "claude.weekly.percentage",
@@ -540,7 +540,7 @@
             "track": {
               "color": "#444444FF"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -574,9 +574,9 @@
           "name": "light Claude Code 7-day segments",
           "render": "1 - system.dark",
           "parent": "claude-provider",
-          "y": "28",
+          "y": "30",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "claude.weekly.percentage",
@@ -587,7 +587,7 @@
             "track": {
               "color": "#AAAAAAFF"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -629,20 +629,20 @@
           "name": "dark Codex 5-hour segments",
           "render": "system.dark",
           "parent": "codex-provider",
-          "y": "5",
+          "y": "8",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "codex.five_hour.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#F5F5F5FF"
+              "color": "#10A37FFF"
             },
             "track": {
               "color": "#444444FF"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -654,7 +654,7 @@
           "render": "system.dark",
           "parent": "codex-provider",
           "x": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4",
-          "y": "5",
+          "y": "6",
           "width": "62",
           "height": "13",
           "content": {
@@ -676,20 +676,20 @@
           "name": "light Codex 5-hour segments",
           "render": "1 - system.dark",
           "parent": "codex-provider",
-          "y": "5",
+          "y": "8",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "codex.five_hour.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#1F1F1FFF"
+              "color": "#10A37FFF"
             },
             "track": {
               "color": "#AAAAAAFF"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -701,7 +701,7 @@
           "render": "1 - system.dark",
           "parent": "codex-provider",
           "x": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4",
-          "y": "5",
+          "y": "6",
           "width": "62",
           "height": "13",
           "content": {
@@ -723,20 +723,20 @@
           "name": "dark Codex 7-day segments",
           "render": "system.dark",
           "parent": "codex-provider",
-          "y": "28",
+          "y": "30",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "codex.weekly.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#F5F5F5FF"
+              "color": "#10A37FFF"
             },
             "track": {
               "color": "#444444FF"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -770,20 +770,20 @@
           "name": "light Codex 7-day segments",
           "render": "1 - system.dark",
           "parent": "codex-provider",
-          "y": "28",
+          "y": "30",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "codex.weekly.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#1F1F1FFF"
+              "color": "#10A37FFF"
             },
             "track": {
               "color": "#AAAAAAFF"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -825,9 +825,9 @@
           "name": "dark Antigravity 5-hour segments",
           "render": "system.dark",
           "parent": "antigravity-provider",
-          "y": "5",
+          "y": "8",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "antigravity.session.percentage",
@@ -838,7 +838,7 @@
             "track": {
               "color": "#444444FF"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -850,7 +850,7 @@
           "render": "system.dark",
           "parent": "antigravity-provider",
           "x": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4",
-          "y": "5",
+          "y": "6",
           "width": "62",
           "height": "13",
           "content": {
@@ -872,9 +872,9 @@
           "name": "light Antigravity 5-hour segments",
           "render": "1 - system.dark",
           "parent": "antigravity-provider",
-          "y": "5",
+          "y": "8",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "antigravity.session.percentage",
@@ -885,7 +885,7 @@
             "track": {
               "color": "#AAAAAAFF"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -897,7 +897,7 @@
           "render": "1 - system.dark",
           "parent": "antigravity-provider",
           "x": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4",
-          "y": "5",
+          "y": "6",
           "width": "62",
           "height": "13",
           "content": {
@@ -919,9 +919,9 @@
           "name": "dark Antigravity 7-day segments",
           "render": "system.dark",
           "parent": "antigravity-provider",
-          "y": "28",
+          "y": "30",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "antigravity.weekly.percentage",
@@ -932,7 +932,7 @@
             "track": {
               "color": "#444444FF"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -966,9 +966,9 @@
           "name": "light Antigravity 7-day segments",
           "render": "1 - system.dark",
           "parent": "antigravity-provider",
-          "y": "28",
+          "y": "30",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "antigravity.weekly.percentage",
@@ -979,7 +979,7 @@
             "track": {
               "color": "#AAAAAAFF"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -1021,9 +1021,9 @@
           "name": "dark OpenCode 5-hour segments",
           "render": "system.dark",
           "parent": "opencode-provider",
-          "y": "5",
+          "y": "8",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "opencode.session.percentage",
@@ -1034,7 +1034,7 @@
             "track": {
               "color": "#444444FF"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -1046,7 +1046,7 @@
           "render": "system.dark",
           "parent": "opencode-provider",
           "x": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4",
-          "y": "5",
+          "y": "6",
           "width": "62",
           "height": "13",
           "content": {
@@ -1068,20 +1068,20 @@
           "name": "light OpenCode 5-hour segments",
           "render": "1 - system.dark",
           "parent": "opencode-provider",
-          "y": "5",
+          "y": "8",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "opencode.session.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#2E7D32FF"
+              "color": "#4CAF50FF"
             },
             "track": {
               "color": "#AAAAAAFF"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -1093,7 +1093,7 @@
           "render": "1 - system.dark",
           "parent": "opencode-provider",
           "x": "ceil(10 / max(1, providers.count)) * 11 - 1 + 4",
-          "y": "5",
+          "y": "6",
           "width": "62",
           "height": "13",
           "content": {
@@ -1115,9 +1115,9 @@
           "name": "dark OpenCode long-window segments",
           "render": "system.dark",
           "parent": "opencode-provider",
-          "y": "28",
+          "y": "30",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "opencode.weekly.percentage",
@@ -1128,7 +1128,7 @@
             "track": {
               "color": "#444444FF"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -1162,20 +1162,20 @@
           "name": "light OpenCode long-window segments",
           "render": "1 - system.dark",
           "parent": "opencode-provider",
-          "y": "28",
+          "y": "30",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "opencode.weekly.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#2E7D32FF"
+              "color": "#4CAF50FF"
             },
             "track": {
               "color": "#AAAAAAFF"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -1209,22 +1209,22 @@
           "name": "dark claude credit overlay",
           "render": "(system.dark) && claude.credits.available",
           "parent": "claude-provider",
-          "y": "28",
+          "y": "30",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "claude.credits.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#F5A623FF",
+              "color": "#D97757FF",
               "opacity": "1"
             },
             "track": {
               "color": "#00000000",
               "opacity": "0"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -1259,22 +1259,22 @@
           "name": "light claude credit overlay",
           "render": "(1 - system.dark) && claude.credits.available",
           "parent": "claude-provider",
-          "y": "28",
+          "y": "30",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "claude.credits.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#C77700FF",
+              "color": "#D97757FF",
               "opacity": "1"
             },
             "track": {
               "color": "#00000000",
               "opacity": "0"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -1309,22 +1309,22 @@
           "name": "dark codex credit overlay",
           "render": "(system.dark) && codex.credits.available",
           "parent": "codex-provider",
-          "y": "28",
+          "y": "30",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "codex.credits.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#F5A623FF",
+              "color": "#10A37FFF",
               "opacity": "1"
             },
             "track": {
               "color": "#00000000",
               "opacity": "0"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"
@@ -1359,22 +1359,22 @@
           "name": "light codex credit overlay",
           "render": "(1 - system.dark) && codex.credits.available",
           "parent": "codex-provider",
-          "y": "28",
+          "y": "30",
           "width": "ceil(10 / max(1, providers.count)) * 11 - 1",
-          "height": "13",
+          "height": "10",
           "content": {
             "type": "progress",
             "value": "codex.credits.percentage",
             "direction": "left_to_right",
             "fill": {
-              "color": "#C77700FF",
+              "color": "#10A37FFF",
               "opacity": "1"
             },
             "track": {
               "color": "#00000000",
               "opacity": "0"
             },
-            "corner_radius": "2",
+            "corner_radius": "3",
             "segments": 10,
             "segments_expression": "ceil(10 / max(1, providers.count))",
             "segment_gap": "1"

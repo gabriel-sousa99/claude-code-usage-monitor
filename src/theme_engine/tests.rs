@@ -535,15 +535,15 @@ fn usage_lines_handle_loading_errors_missing_resets_and_language() {
 }
 
 #[test]
-fn built_in_classic_uses_149_geometry() {
+fn starter_capsula_uses_compact_geometry() {
     let theme = ThemeDocument::starter();
-    assert_eq!(theme.id, CLASSIC_THEME_ID);
-    assert_eq!(theme.name, "Classic v1");
+    assert_eq!(theme.id, CAPSULA_THEME_ID);
+    assert_eq!(theme.name, "Cápsula");
     assert_eq!(theme.validate(), Vec::<String>::new());
     for (runtime, expected_width) in [
-        (ThemeRuntime::new(true, false, false), 217),
-        (ThemeRuntime::new(true, true, false), 285),
-        (ThemeRuntime::new(true, true, true), 375),
+        (ThemeRuntime::new(true, false, false), 251),
+        (ThemeRuntime::new(true, true, false), 345),
+        (ThemeRuntime::new(true, true, true), 461),
     ] {
         assert_eq!(
             resolve_surface_size(&theme, 0, None, runtime),
@@ -752,15 +752,10 @@ fn opencode_monthly_window_is_available_to_templates_when_present() {
 fn starter_theme_renders_transparent_pixels_at_declared_size() {
     let theme = ThemeDocument::starter();
     let rendered = render_theme(&theme, None);
-    assert_eq!((rendered.width, rendered.height), (217, 46));
-    assert_eq!(rendered.pixels.len(), 217 * 46);
+    assert_eq!((rendered.width, rendered.height), (251, 46));
+    assert_eq!(rendered.pixels.len(), 251 * 46);
     assert!(rendered.pixels.iter().any(|pixel| pixel >> 24 > 0));
     assert_eq!(rendered.pixels[0] >> 24, 0);
-    let track_alpha = (30..139)
-        .map(|x| rendered.pixels[10 * rendered.width as usize + x] >> 24)
-        .collect::<Vec<_>>();
-    assert!(track_alpha.iter().filter(|alpha| **alpha == 0).count() >= 9);
-    assert!(track_alpha.iter().filter(|alpha| **alpha > 0).count() >= 70);
     assert!(rendered.warnings.is_empty());
 }
 
@@ -794,10 +789,10 @@ fn theme_surfaces_rasterize_at_requested_dpi_scales() {
     let theme = ThemeDocument::starter();
     let runtime = ThemeRuntime::new(true, false, false);
     for (scale, width, height) in [
-        (1.0, 217, 46),
-        (1.25, 271, 58),
-        (1.5, 326, 69),
-        (2.0, 434, 92),
+        (1.0, 251, 46),
+        (1.25, 314, 58),
+        (1.5, 377, 69),
+        (2.0, 502, 92),
     ] {
         let rendered = render_theme_surface_with_runtime_at_scale(&theme, 0, None, runtime, scale);
         assert_eq!((rendered.width, rendered.height), (width, height));
@@ -862,7 +857,7 @@ fn invalid_render_scales_fall_back_to_one() {
             ThemeRuntime::default(),
             scale,
         );
-        assert_eq!((rendered.width, rendered.height), (217, 46));
+        assert_eq!((rendered.width, rendered.height), (251, 46));
     }
 }
 
@@ -1029,13 +1024,13 @@ fn render_collapses_layout_while_zero_visibility_keeps_space() {
     theme.surfaces[0].children[claude].visibility = 0.0.into();
     assert_eq!(
         resolve_object_bounds_with_runtime(&theme, 0, codex, None, runtime).map(|bounds| bounds.0),
-        Some(164.0)
+        Some(187.0)
     );
 
     theme.surfaces[0].children[claude].render = 0.0.into();
     assert_eq!(
         resolve_object_bounds_with_runtime(&theme, 0, codex, None, runtime).map(|bounds| bounds.0),
-        Some(41.0)
+        Some(38.0)
     );
 }
 
@@ -1092,26 +1087,26 @@ fn starter_adapts_width_segments_and_collapsed_provider_rows() {
             .unwrap()
     };
     for (runtime, width, segments) in [
-        (ThemeRuntime::new(true, false, false), 217, 10),
-        (ThemeRuntime::new(false, true, false), 217, 10),
-        (ThemeRuntime::new(false, false, true), 217, 10),
-        (ThemeRuntime::new(true, true, false), 285, 5),
-        (ThemeRuntime::new(true, false, true), 285, 5),
-        (ThemeRuntime::new(false, true, true), 285, 5),
-        (ThemeRuntime::new(true, true, true), 375, 4),
+        (ThemeRuntime::new(true, false, false), 251, 10),
+        (ThemeRuntime::new(false, true, false), 251, 10),
+        (ThemeRuntime::new(false, false, true), 251, 10),
+        (ThemeRuntime::new(true, true, false), 345, 5),
+        (ThemeRuntime::new(true, false, true), 345, 5),
+        (ThemeRuntime::new(false, true, true), 345, 5),
+        (ThemeRuntime::new(true, true, true), 461, 4),
         (
             ThemeRuntime::from_providers(ProviderSet::from_enabled([ProviderId::OpenCode])),
-            245,
+            280,
             10,
         ),
         (
             ThemeRuntime::from_providers(ProviderSet::from_enabled([ProviderId::Cursor])),
-            245,
+            280,
             10,
         ),
         (
             ThemeRuntime::from_providers(ProviderSet::from_enabled(ProviderId::ALL)),
-            545,
+            685,
             2,
         ),
     ] {
@@ -1138,7 +1133,7 @@ fn starter_adapts_width_segments_and_collapsed_provider_rows() {
     assert_eq!(
         resolve_object_bounds_with_runtime(&theme, 0, index("codex-provider"), None, codex_only,)
             .map(|bounds| bounds.0),
-        Some(41.0)
+        Some(38.0)
     );
     assert!(resolve_object_bounds_with_runtime(
         &theme,
@@ -1159,7 +1154,7 @@ fn starter_adapts_width_segments_and_collapsed_provider_rows() {
             claude_and_antigravity,
         )
         .map(|bounds| bounds.0),
-        Some(164.0)
+        Some(187.0)
     );
 }
 
@@ -1181,7 +1176,8 @@ fn each_surface_renders_at_its_own_size() {
 #[test]
 fn starter_has_a_taskbar_widget_and_provider_tray_icons() {
     let theme = ThemeDocument::starter();
-    assert!(theme.is_builtin_classic());
+    assert!(theme.is_builtin());
+    assert_eq!(theme.id, CAPSULA_THEME_ID);
     assert_eq!(theme.surfaces[0].placement.nest, SurfaceNest::Taskbar);
     assert_eq!(
         theme.surfaces[0].placement.reference.region,
@@ -1241,8 +1237,13 @@ fn starter_tray_icons_follow_enabled_providers() {
 
 #[test]
 fn built_in_themes_are_valid_and_cannot_be_saved_as_editable_themes() {
-    assert_eq!(BUILTIN_THEME_SOURCES.len(), 1);
-    assert_eq!(BUILTIN_THEME_SOURCES[0].0, CLASSIC_THEME_ID);
+    assert_eq!(
+        BUILTIN_THEME_SOURCES
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>(),
+        vec![CAPSULA_THEME_ID, CLASSIC_THEME_ID]
+    );
     assert!(REMOVED_BUILTIN_THEME_IDS
         .iter()
         .all(|id| !is_builtin_theme_id(id)));
@@ -1283,9 +1284,122 @@ fn built_in_themes_are_valid_and_cannot_be_saved_as_editable_themes() {
 }
 
 #[test]
+fn multi_provider_theme_rows_use_claude_geometry_and_provider_accents() {
+    let provider_accents = [
+        ("claude", "#D97757FF"),
+        ("codex", "#10A37FFF"),
+        ("cursor", "#7C5CFFFF"),
+        ("antigravity", "#4285F4FF"),
+        ("opencode", "#4CAF50FF"),
+    ];
+    let mut multi_provider_themes = 0;
+
+    for (_, source) in BUILTIN_THEME_SOURCES
+        .iter()
+        .chain(BUNDLED_EDITABLE_THEME_SOURCES)
+    {
+        let theme: ThemeDocument = serde_json::from_str(source).unwrap();
+        let Some(main) = theme.surfaces.iter().find(|surface| surface.id == "main") else {
+            continue;
+        };
+        if !main
+            .children
+            .iter()
+            .any(|object| object.id == "claude-provider")
+        {
+            continue;
+        }
+        multi_provider_themes += 1;
+
+        for (provider, accent) in provider_accents {
+            let parent = format!("{provider}-provider");
+            let provider_objects = main
+                .children
+                .iter()
+                .filter(|object| object.parent.as_deref() == Some(parent.as_str()))
+                .collect::<Vec<_>>();
+            assert!(
+                !provider_objects.is_empty(),
+                "{} is missing its {provider} indicator",
+                theme.name
+            );
+
+            for object in provider_objects {
+                match &object.content {
+                    SceneContent::Progress {
+                        direction,
+                        fill,
+                        corner_radius,
+                        segments,
+                        segment_gap,
+                        ..
+                    } => {
+                        let expected_y = if object.id.contains("session") {
+                            "8"
+                        } else {
+                            "30"
+                        };
+                        assert_eq!(object.y.0, expected_y, "{} / {}", theme.name, object.id);
+                        assert_eq!(object.height.0, "10", "{} / {}", theme.name, object.id);
+                        assert_eq!(
+                            *direction,
+                            ProgressDirection::LeftToRight,
+                            "{} / {}",
+                            theme.name,
+                            object.id
+                        );
+                        assert_eq!(fill.color, accent, "{} / {}", theme.name, object.id);
+                        assert_eq!(corner_radius.0, "3", "{} / {}", theme.name, object.id);
+                        assert_eq!(*segments, 10, "{} / {}", theme.name, object.id);
+                        assert_eq!(segment_gap.0, "1", "{} / {}", theme.name, object.id);
+                    }
+                    SceneContent::Text {
+                        font_size,
+                        weight,
+                        rendering,
+                        align,
+                        ..
+                    } => {
+                        let expected_y = if object.id.contains("session") {
+                            "6"
+                        } else {
+                            "28"
+                        };
+                        assert_eq!(object.y.0, expected_y, "{} / {}", theme.name, object.id);
+                        assert_eq!(object.height.0, "13", "{} / {}", theme.name, object.id);
+                        assert_eq!(font_size.0, "12", "{} / {}", theme.name, object.id);
+                        assert_eq!(
+                            *weight,
+                            FontWeight::Medium,
+                            "{} / {}",
+                            theme.name,
+                            object.id
+                        );
+                        assert_eq!(
+                            *rendering,
+                            FontRendering::ClearType,
+                            "{} / {}",
+                            theme.name,
+                            object.id
+                        );
+                        assert_eq!(*align, TextAlign::Left, "{} / {}", theme.name, object.id);
+                    }
+                    SceneContent::None => {}
+                }
+            }
+        }
+    }
+
+    assert_eq!(multi_provider_themes, 3);
+}
+
+#[test]
 fn bundled_minecraft_theme_is_valid_editable_and_uses_dashboard_v2() {
-    assert_eq!(BUNDLED_EDITABLE_THEME_SOURCES.len(), 1);
-    let (expected_id, source) = BUNDLED_EDITABLE_THEME_SOURCES[0];
+    let (expected_id, source) = BUNDLED_EDITABLE_THEME_SOURCES
+        .iter()
+        .find(|(id, _)| *id == MINECRAFT_THEME_ID)
+        .copied()
+        .unwrap();
     let mut theme: ThemeDocument = serde_json::from_str(source).unwrap();
     assert_eq!(expected_id, MINECRAFT_THEME_ID);
     assert_eq!(theme.id, MINECRAFT_THEME_ID);
