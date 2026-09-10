@@ -1,104 +1,143 @@
-# Claude Code Usage Monitor
+# Claude Code Usage Monitor (Fork Customizado)
 
-![Windows](https://img.shields.io/badge/platform-Windows-blue)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Windows](https://img.shields.io/badge/plataforma-Windows-blue)
+[![Licença: MIT](https://img.shields.io/badge/Licenca-MIT-yellow.svg)](LICENSE)
 
-A lightweight, open-source Windows taskbar widget for monitoring Claude Code usage limits and reset times. It can also display usage for Codex, Google Antigravity, OpenCode Go, and Cursor.
+Widget leve para a barra de tarefas do Windows que monitora os limites de uso do Claude Code e o horário de reset. Também exibe uso do Codex, Google Antigravity, OpenCode Go e Cursor.
 
-![Claude Code Usage Monitor running in the Windows taskbar](.github/animation.gif)
+![Claude Code Usage Monitor rodando na barra de tarefas do Windows](.github/animation.gif)
 
-## Features
+## Sobre este fork
 
-- Displays current usage and time remaining until each limit resets
-- Supports Claude Code, Codex, Google Antigravity, OpenCode Go, and Cursor
-- Lives in the Windows taskbar with quick controls in the system tray
-- Supports multiple monitors and Windows startup
-- Includes configurable refresh intervals, providers, languages, and updates
-- Provides built-in themes and a visual Theme Studio for custom layouts
-- Collects no analytics or telemetry
+Este repositório é um fork de [CodeZeno/Claude-Code-Usage-Monitor](https://github.com/CodeZeno/Claude-Code-Usage-Monitor), sincronizado com a v2.10.21 do projeto original.
 
-## Requirements
+Diferenças em relação ao upstream:
 
-- Windows 10 or Windows 11
-- At least one supported provider installed and signed in
+- **pt-BR como idioma padrão**: quando o Windows não reporta um idioma reconhecido pelo app, o fallback é português do Brasil em vez de inglês (`src/localization/mod.rs`). Os outros 13 idiomas do upstream continuam disponíveis no menu (**Configurações → Idioma**), inclusive a opção "Padrão do sistema".
+- **Sem verificação de atualizações**: o item de menu e a checagem automática em segundo plano foram desarmados. O app nunca faz requisição de rede para checar versão nem mostra prompt de atualização.
+- **Cache de credenciais OAuth**: evita religar a distro WSL a cada ciclo de poll só para ler o token — o token fica em cache em memória enquanto for válido (ver "Sobre o cache OAuth" abaixo).
+- **Diagnóstico não loga argumentos de CLI**: `--diagnose` grava o log sem incluir os argumentos de linha de comando recebidos pelo processo.
 
-Claude Code credentials can be detected from the CLI, Claude desktop app, or WSL. Other providers are optional and can be enabled independently from the dashboard.
+O upstream, entre a v1.3.1 (onde este fork havia parado) e a v2.10.21, deixou de ser só um monitor do Claude Code e passou a suportar múltiplos provedores (Codex, Antigravity, OpenCode, Cursor) com um Theme Studio completo para customização visual. Este fork adotou essa base inteira — a customização visual do widget (cor, borda, espaçamento, layout tipo cápsula), que antes era feita direto no menu de contexto, hoje é responsabilidade do **Theme Studio** (`claude-code-usage-monitor --dashboard`, aba de temas), não deste fork.
 
-## Installation
+**Pendência conhecida, não portada**: o commit original do fork que exibia o countdown como "4h 32m" (horas e minutos) não foi reaplicado. No upstream atual esse texto é montado por uma função Rust (`format_usage_line`) compartilhada por todos os provedores, e as caixas de texto do tema não têm ajuste automático de largura — mudar o formato sem conseguir renderizar o widget arrisca cortar o texto na tela. Quem quiser esse formato deve validar visualmente no Windows antes de portar.
 
-Install the latest release with WinGet:
+## Funcionalidades
 
-```powershell
-winget install CodeZeno.ClaudeCodeUsageMonitor
-```
+- Mostra o uso atual e o tempo até cada limite resetar
+- Suporta Claude Code, Codex, Google Antigravity, OpenCode Go e Cursor
+- Fica na barra de tarefas do Windows, com controles rápidos na bandeja do sistema
+- Suporta múltiplos monitores e inicialização com o Windows
+- Intervalo de atualização, provedores e idioma configuráveis
+- Temas prontos e um Theme Studio visual para layouts customizados
+- Não coleta analytics nem telemetria
 
-Alternatively, download `claude-code-usage-monitor.exe` from [GitHub Releases](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/releases).
+## Requisitos
 
-## Usage
+- Windows 10 ou Windows 11
+- Pelo menos um provedor suportado instalado e autenticado
 
-Start the monitor:
+As credenciais do Claude Code são detectadas via CLI, app desktop ou WSL. Os demais provedores são opcionais e podem ser ativados independentemente pelo dashboard.
+
+## Instalação
+
+Baixe `claude-code-usage-monitor.exe` na aba [Releases](../../releases) deste repositório, ou compile a partir do código-fonte (veja abaixo).
+
+## Uso
+
+Iniciar o monitor:
 
 ```powershell
 claude-code-usage-monitor
 ```
 
-Open the settings dashboard directly:
+Abrir o dashboard de configurações diretamente:
 
 ```powershell
 claude-code-usage-monitor --dashboard
 ```
 
-Use the dashboard to select providers, change the refresh interval, choose a display, enable startup, or customize the widget. In the default theme, left-click a provider tray icon to show or hide the widget and right-click it to open the menu.
+Use o dashboard para escolher provedores, mudar o intervalo de atualização, escolher um monitor, ativar a inicialização com o Windows ou customizar o widget (Theme Studio). No tema padrão, clique com o botão esquerdo no ícone de um provedor na bandeja para mostrar ou esconder o widget, e com o botão direito para abrir o menu.
 
-## Provider setup
+## Configuração dos provedores
 
-| Provider | Setup |
+| Provedor | Configuração |
 | --- | --- |
-| Claude Code | Sign in with the Claude Code CLI or desktop app. Windows and WSL credentials are detected automatically. |
-| Codex | Install and sign in to the Codex CLI, then enable Codex in **Providers**. |
-| Google Antigravity | Sign in to Antigravity, then enable it in **Providers**. |
-| OpenCode Go | Connect an OpenCode Go account, configure the credentials described below, then enable OpenCode in **Providers**. |
-| Cursor | Sign in to Cursor, then enable it in **Providers**. The local session is detected automatically. |
+| Claude Code | Faça login pela CLI ou pelo app desktop do Claude Code. Credenciais do Windows e do WSL são detectadas automaticamente. |
+| Codex | Instale e faça login na CLI do Codex, depois ative o Codex em **Provedores**. |
+| Google Antigravity | Faça login no Antigravity, depois ative em **Provedores**. |
+| OpenCode Go | Conecte uma conta OpenCode Go, configure as credenciais descritas abaixo, depois ative o OpenCode em **Provedores**. |
+| Cursor | Faça login no Cursor, depois ative em **Provedores**. A sessão local é detectada automaticamente. |
 
-For OpenCode Go, set `OPENCODE_GO_WORKSPACE_ID` and `OPENCODE_GO_AUTH_COOKIE`, or create `%APPDATA%\opencode-go\config.json`:
+Para o OpenCode Go, defina `OPENCODE_GO_WORKSPACE_ID` e `OPENCODE_GO_AUTH_COOKIE`, ou crie `%APPDATA%\opencode-go\config.json`:
 
 ```json
 {
   "workspaceId": "wrk_01...",
-  "authCookie": "your-opencode-auth-cookie"
+  "authCookie": "seu-cookie-de-autenticacao-opencode"
 }
 ```
 
-The workspace ID is part of the OpenCode Go workspace URL. The auth cookie comes from an authenticated `opencode.ai` browser session. Set `OPENCODE_GO_CONFIG_FILE` to use a different config path.
+O workspace ID faz parte da URL do workspace do OpenCode Go. O cookie de autenticação vem de uma sessão autenticada no navegador em `opencode.ai`. Defina `OPENCODE_GO_CONFIG_FILE` para usar outro caminho de configuração.
 
-For Cursor, `CURSOR_SESSION_TOKEN` can override the automatically detected local session.
+Para o Cursor, `CURSOR_SESSION_TOKEN` pode sobrescrever a sessão local detectada automaticamente.
 
-## Data and privacy
+## Sobre o cache OAuth (Claude Code via WSL)
 
-The monitor reads local sign-in credentials for enabled providers and sends usage requests directly to their official services. It has no backend service, collects no telemetry, and does not upload credentials or project files.
+Sem esse cache, cada ciclo de poll executaria `wsl.exe -d <distro> -- sh -lc "cat ~/.claude/.credentials.json"`. Com a distro parada, esse comando liga a VM inteira (systemd, docker, containerd, php-fpm etc.) só para ler ~1 KB, e ela desliga segundos depois — com um intervalo de poll de 5 minutos, isso significa boots frequentes da distro.
 
-Credentials are read without modifying the provider files that contain them. OpenCode Go credentials saved in a JSON configuration file are plain text and should be protected like a browser session cookie.
+Como o token OAuth vale horas, este fork mantém o último token válido em cache de memória (`src/poller/claude.rs`) e só volta a ler o arquivo de credenciais quando o cache expira ou falha duas vezes seguidas. Isso não cobre o caminho de verificação de credenciais que roda enquanto o app está esperando o usuário corrigir um erro de autenticação (`wsl_credential_watch_signature`) — esse caminho já existia no upstream e continua ligando a distro nesse cenário específico, mais raro.
 
-## Troubleshooting
+## Dados e privacidade
 
-Run diagnostics with:
+O monitor lê credenciais de login locais dos provedores ativados e envia requisições de uso diretamente aos serviços oficiais deles. Não há backend próprio, não coleta telemetria e não envia credenciais nem arquivos do projeto para lugar nenhum.
+
+As credenciais são lidas sem modificar os arquivos dos provedores que as contêm. Credenciais do OpenCode Go salvas em arquivo de configuração JSON ficam em texto plano e devem ser protegidas como um cookie de sessão de navegador.
+
+## Solução de problemas
+
+Rode o diagnóstico com:
 
 ```powershell
 claude-code-usage-monitor --diagnose
 ```
 
-The diagnostic log is written to `%TEMP%\claude-code-usage-monitor.log`. Application settings are stored in `%APPDATA%\ClaudeCodeUsageMonitor\settings.json`.
+O log de diagnóstico é gravado em `%TEMP%\claude-code-usage-monitor.log`. As configurações da aplicação ficam em `%APPDATA%\ClaudeCodeUsageMonitor\settings.json`.
 
-## Build from source
+## Compilar a partir do código-fonte
 
-Install [Rust](https://www.rust-lang.org/tools/install) 1.95 or later, then run:
+### No Windows
+
+Instale o [Rust](https://www.rust-lang.org/tools/install) 1.95 ou mais recente e rode:
 
 ```powershell
 cargo build --release
 ```
 
-The executable will be created at `target\release\claude-code-usage-monitor.exe`.
+O executável é gerado em `target\release\claude-code-usage-monitor.exe`.
 
-## License
+### Cross-compile a partir do WSL/Linux
 
-Licensed under the [MIT License](LICENSE).
+O projeto é Windows-only (usa a crate `windows` e recursos de PE), mas dá para compilar e rodar `cargo check`/`cargo build`/`cargo test --no-run` a partir do WSL para desenvolvimento, sem precisar abrir o Windows a cada mudança:
+
+```bash
+rustup target add x86_64-pc-windows-gnu
+sudo apt install -y mingw-w64
+
+mkdir -p ~/.local/mingw-shims/lib-ci
+ln -sf /usr/bin/x86_64-w64-mingw32-windres ~/.local/mingw-shims/windres
+ln -sf /usr/bin/x86_64-w64-mingw32-gcc-ar ~/.local/mingw-shims/ar
+ln -sf /usr/x86_64-w64-mingw32/lib/libadvapi32.a ~/.local/mingw-shims/lib-ci/libAdvapi32.a
+
+PATH="$HOME/.local/mingw-shims:$PATH" \
+RUSTFLAGS="-L $HOME/.local/mingw-shims/lib-ci" \
+cargo build --target x86_64-pc-windows-gnu
+```
+
+Os dois symlinks e o overlay de lib existem para contornar diferenças entre o toolchain do mingw-w64 do Linux e o que a crate `winres` (build de recursos do `.exe`) e a crate `windows` (nomes de biblioteca do Windows SDK) esperam encontrar por padrão em cross-compile.
+
+Isso valida que o código compila e os testes montam (`cargo test --target x86_64-pc-windows-gnu --no-run`), mas **não roda os testes nem o app** — para isso, ainda é preciso Windows (ou um runner Wine configurado, não coberto aqui).
+
+## Licença
+
+Licenciado sob a [Licença MIT](LICENSE).
