@@ -415,12 +415,6 @@ pub fn classic_context_menu() -> ContextMenuDocument {
                 Action::ToggleStartup,
             ),
             ContextMenuItem::submenu("language", "Language", languages),
-            ContextMenuItem::separator("settings-separator"),
-            ContextMenuItem::action(
-                "check-updates",
-                "Check for updates",
-                Action::CheckForUpdates,
-            ),
         ],
     );
 

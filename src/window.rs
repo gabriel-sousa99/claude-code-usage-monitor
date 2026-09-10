@@ -825,7 +825,16 @@ fn auto_update_check_due(last_update_check_unix: Option<u64>) -> bool {
     now_unix_secs().saturating_sub(last_update_check_unix) >= update_check_interval().as_secs()
 }
 
+// Desarmado junto de begin_update_check/run_update_check: nunca reagenda o
+// timer TIMER_UPDATE_CHECK, só garante que ele fique parado.
 fn schedule_auto_update_check(hwnd: HWND) {
+    unsafe {
+        let _ = KillTimer(Some(hwnd), TIMER_UPDATE_CHECK);
+    }
+}
+
+#[allow(dead_code)]
+fn run_schedule_auto_update_check(hwnd: HWND) {
     let delay_ms = {
         let state = lock_state();
         let Some(s) = state.as_ref() else {
@@ -924,7 +933,16 @@ fn update_language_change() -> bool {
     true
 }
 
+// Este fork não expõe verificação de atualizações — nem automática, nem
+// manual pelo menu (histórico original do fork, commit a7c3222). O corpo
+// original fica preservado em run_update_check(), sem uso, para manter a
+// superfície de conflito mínima em futuras sincronizações com o upstream.
 fn begin_update_check(hwnd: HWND, interactive: bool) {
+    let _ = (hwnd, interactive);
+}
+
+#[allow(dead_code)]
+fn run_update_check(hwnd: HWND, interactive: bool) {
     let send_hwnd = SendHwnd::from_hwnd(hwnd);
     let (strings, install_channel) = {
         let mut state = lock_state();
