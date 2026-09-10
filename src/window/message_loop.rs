@@ -154,10 +154,39 @@ pub(super) unsafe extern "system" fn wnd_proc(
         }
         WM_SETCURSOR if set_surface_cursor(hwnd) => LRESULT(1),
         WM_SETCURSOR => DefWindowProcW(hwnd, msg, wparam, lparam),
+        WM_LBUTTONDOWN => {
+            let mut pt = POINT::default();
+            let _ = GetCursorPos(&mut pt);
+            {
+                let mut state = lock_state();
+                if let Some(s) = state.as_mut() {
+                    s.left_press_pending = true;
+                    s.drag_start_mouse_x = pt.x;
+                    s.drag_start_client_x = (lparam.0 & 0xFFFF) as i16 as i32;
+                    s.drag_start_offset = s.tray_offset;
+                }
+            }
+            SetCapture(hwnd);
+            LRESULT(0)
+        }
         WM_MOUSEMOVE => {
             let is_dragging = {
-                let state = lock_state();
-                state.as_ref().map(|s| s.dragging).unwrap_or(false)
+                let mut state = lock_state();
+                match state.as_mut() {
+                    Some(s) => {
+                        // Só vira arraste depois de passar do limiar: abaixo
+                        // disso o gesto ainda pode terminar como clique.
+                        if s.left_press_pending && !s.dragging {
+                            let mut pt = POINT::default();
+                            let _ = GetCursorPos(&mut pt);
+                            if (pt.x - s.drag_start_mouse_x).abs() >= DRAG_THRESHOLD_PX {
+                                s.dragging = true;
+                            }
+                        }
+                        s.dragging
+                    }
+                    None => false,
+                }
             };
             if is_dragging {
                 let mut pt = POINT::default();
@@ -285,6 +314,7 @@ pub(super) unsafe extern "system" fn wnd_proc(
             let drag_result = {
                 let mut state = lock_state();
                 if let Some(s) = state.as_mut() {
+                    s.left_press_pending = false;
                     if s.dragging {
                         s.dragging = false;
                         Some((s.taskbar_index, s.drag_start_client_x))
@@ -295,6 +325,11 @@ pub(super) unsafe extern "system" fn wnd_proc(
                     None
                 }
             };
+            if drag_result.is_none() {
+                // A captura é tomada em todo WM_LBUTTONDOWN; o ramo de arraste
+                // libera a sua mais adiante, este cobre o clique simples.
+                let _ = ReleaseCapture();
+            }
             if let Some((current_taskbar_index, drag_start_client_x)) = drag_result {
                 let _ = ReleaseCapture();
                 if let Some((target_index, target_taskbar)) = taskbar_at_point(pt) {

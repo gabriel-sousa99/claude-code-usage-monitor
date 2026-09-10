@@ -15,7 +15,7 @@ use windows::Win32::UI::Accessibility::HWINEVENTHOOK;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetDoubleClickTime, ReleaseCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    GetDoubleClickTime, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -109,6 +109,10 @@ struct AppState {
     taskbar_index: usize,
     tray_offset: i32,
     dragging: bool,
+    /// Botão esquerdo pressionado sobre o widget, ainda sem deslocamento
+    /// suficiente para virar arraste. Separar as duas coisas é o que mantém o
+    /// clique nos ícones funcionando: um clique sem movimento nunca arrasta.
+    left_press_pending: bool,
     drag_start_mouse_x: i32,
     drag_start_client_x: i32,
     drag_start_offset: i32,
@@ -158,6 +162,9 @@ const WM_DPICHANGED_MSG: u32 = 0x02E0;
 const WM_APP_UPDATE_CHECK_COMPLETE: u32 = WM_APP + 2;
 const TRAY_ICON_UPDATE_REPOSITION_SUPPRESS_MS: u64 = 750;
 const WINDOW_STATE_INTERVAL_MS: u32 = 250;
+/// Deslocamento horizontal a partir do qual o botão pressionado vira arraste
+/// do widget, em vez de clique.
+const DRAG_THRESHOLD_PX: i32 = 4;
 
 fn language_menu_command_id(language: LanguageId) -> u16 {
     IDM_LANG_FIRST
@@ -1820,6 +1827,7 @@ pub fn run() {
                 taskbar_index: settings.taskbar_index,
                 tray_offset: settings.tray_offset,
                 dragging: false,
+                left_press_pending: false,
                 drag_start_mouse_x: 0,
                 drag_start_client_x: 0,
                 drag_start_offset: 0,
