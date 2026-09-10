@@ -317,8 +317,15 @@ pub(super) fn scene_object_icon_color(
 }
 
 pub(super) fn scene_paint_color(paint: &Paint) -> egui::Color32 {
-    let Some(color) = theme_engine::parse_color(&paint.color) else {
-        return egui::Color32::TRANSPARENT;
+    // O preview não tem o contexto de dados do widget, então lê o acento
+    // direto do sistema para não desenhar em branco quem usa o token.
+    let color = match theme_engine::parse_color(&paint.color) {
+        Some(color) => color,
+        None if theme_engine::is_valid_color_source(&paint.color) => {
+            let (r, g, b) = crate::theme::accent_color();
+            theme_engine::Rgba { r, g, b, a: 255 }
+        }
+        None => return egui::Color32::TRANSPARENT,
     };
     let opacity = paint
         .opacity

@@ -2392,9 +2392,9 @@ fn validate_expression(
 }
 
 fn validate_paint(errors: &mut Vec<String>, context: &DataContext, label: &str, paint: &Paint) {
-    if parse_color(&paint.color).is_none() {
+    if !is_valid_color_source(&paint.color) {
         errors.push(format!(
-            "{label}: '{}' is not #RRGGBB or #AARRGGBB",
+            "{label}: '{}' is not #RRGGBB, #AARRGGBB or {SYSTEM_ACCENT_TOKEN}",
             paint.color
         ));
     }
@@ -2472,25 +2472,33 @@ fn legacy_surface_nest() -> SurfaceNest {
 /// acento configurada no Windows, em vez de fixar uma cor própria.
 pub const SYSTEM_ACCENT_TOKEN: &str = "system.accent";
 
+/// Alfa que o token pede: "system.accent" usa opaco, "system.accent:80" aceita
+/// um alfa em hex. Devolve `None` quando a string não é o token.
+fn system_accent_alpha(source: &str) -> Option<u8> {
+    let suffix = source.strip_prefix(SYSTEM_ACCENT_TOKEN)?;
+    match suffix.strip_prefix(':') {
+        Some(alpha) => u8::from_str_radix(alpha, 16).ok(),
+        None if suffix.is_empty() => Some(255),
+        None => None,
+    }
+}
+
+/// Toda cor que um tema pode declarar. A validação precisa aceitar o token,
+/// senão o tema padrão seria recusado logo na instalação.
+pub fn is_valid_color_source(source: &str) -> bool {
+    system_accent_alpha(source).is_some() || parse_color(source).is_some()
+}
+
 /// Resolve a cor de um Paint: um hex comum, ou o acento vivo do sistema.
 fn resolve_color(source: &str, context: &DataContext) -> Option<Rgba> {
-    let Some(suffix) = source
-        .strip_prefix(SYSTEM_ACCENT_TOKEN)
-        .filter(|suffix| suffix.is_empty() || suffix.starts_with(':'))
-    else {
+    let Some(a) = system_accent_alpha(source) else {
         return parse_color(source);
-    };
-
-    // "system.accent" usa alfa cheio; "system.accent:80" aceita um alfa em hex.
-    let alpha = match suffix.strip_prefix(':') {
-        Some(value) => u8::from_str_radix(value, 16).ok()?,
-        None => 255,
     };
     Some(Rgba {
         r: context.get("system.accent.r")? as u8,
         g: context.get("system.accent.g")? as u8,
         b: context.get("system.accent.b")? as u8,
-        a: alpha,
+        a,
     })
 }
 
