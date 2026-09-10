@@ -187,7 +187,9 @@ pub fn detect_system_language() -> LanguageId {
         .find_map(|locale| LanguageId::from_code(&locale))
         .or_else(default_ui_locale)
         .or_else(default_locale_name)
-        .unwrap_or(LanguageId::English)
+        // Este fork prioriza pt-BR quando o Windows não reporta um idioma
+        // suportado, em vez do fallback padrão para inglês do upstream.
+        .unwrap_or_else(|| LanguageId::from_code("pt-BR").unwrap_or(LanguageId::English))
 }
 
 pub fn update_via_winget(language: LanguageId) -> &'static str {
