@@ -14,7 +14,7 @@ Este repositório é um fork de [CodeZeno/Claude-Code-Usage-Monitor](https://git
 Diferenças em relação ao upstream:
 
 - **pt-BR como idioma padrão**: quando o Windows não reporta um idioma reconhecido pelo app, o fallback é português do Brasil em vez de inglês (`src/localization/mod.rs`). Os outros 13 idiomas do upstream continuam disponíveis no menu (**Configurações → Idioma**), inclusive a opção "Padrão do sistema".
-- **Sem verificação de atualizações**: o item de menu e a checagem automática em segundo plano foram desarmados. O app nunca faz requisição de rede para checar versão nem mostra prompt de atualização.
+- **Sem verificação de atualizações**: o item de menu e a checagem automática em segundo plano foram desarmados. Sem ação explícita do usuário, o app não faz requisição de rede para checar versão nem mostra prompt de atualização (as flags de CLI internas do instalador, como as usadas pelo WinGet, continuam funcionando).
 - **Cache de credenciais OAuth**: evita religar a distro WSL a cada ciclo de poll só para ler o token — o token fica em cache em memória enquanto for válido (ver "Sobre o cache OAuth" abaixo).
 - **Diagnóstico não loga argumentos de CLI**: `--diagnose` grava o log sem incluir os argumentos de linha de comando recebidos pelo processo.
 
