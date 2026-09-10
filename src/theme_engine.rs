@@ -19,22 +19,37 @@ use crate::models::AppUsageData;
 use crate::providers::{ProviderId, ProviderSet, PROVIDER_DESCRIPTORS};
 
 pub const THEME_SCHEMA_VERSION: u32 = 1;
+pub const CAPSULA_THEME_ID: &str = "capsula";
 pub const CLASSIC_THEME_ID: &str = "classic-usage-widget";
 pub const MINECRAFT_THEME_ID: &str = "theme-minecraft";
+pub const CAPSULA_LARANJA_THEME_ID: &str = "capsula-laranja";
 
-const BUILTIN_THEME_SOURCES: &[(&str, &str)] = &[(
-    CLASSIC_THEME_ID,
-    include_str!("themes/classic-usage-widget.json"),
-)];
+/// A Cápsula vem primeiro porque `starter()` usa o índice 0: é o tema que
+/// instalações novas e a migração de configurações antigas recebem.
+const BUILTIN_THEME_SOURCES: &[(&str, &str)] = &[
+    (CAPSULA_THEME_ID, include_str!("themes/capsula.json")),
+    (
+        CLASSIC_THEME_ID,
+        include_str!("themes/classic-usage-widget.json"),
+    ),
+];
 
 /// Bundled starting points are copied into the managed library only when they
 /// are missing. Their ids are deliberately excluded from `is_builtin_theme_id`
 /// so users can edit, rename, export, or delete them in Theme Studio.
-const BUNDLED_EDITABLE_THEME_SOURCES: &[(&str, &str)] = &[(
-    MINECRAFT_THEME_ID,
-    include_str!("themes/minecraft-codex.json"),
-)];
-const BUNDLED_EDITABLE_INSTALL_MARKER: &str = ".minecraft-theme-installed";
+const BUNDLED_EDITABLE_THEME_SOURCES: &[(&str, &str)] = &[
+    (
+        MINECRAFT_THEME_ID,
+        include_str!("themes/minecraft-codex.json"),
+    ),
+    (
+        CAPSULA_LARANJA_THEME_ID,
+        include_str!("themes/capsula-laranja.json"),
+    ),
+];
+/// Renomeado ao acrescentar a Cápsula Laranja: o marcador antigo já existe nas
+/// instalações em uso e impediria a cópia do tema novo.
+const BUNDLED_EDITABLE_INSTALL_MARKER: &str = ".bundled-themes-installed-v2";
 
 const BUNDLED_THEME_ASSETS: &[(&str, &[u8])] = &[
     (
@@ -1298,6 +1313,10 @@ impl DataContext {
         context.insert("app.version.minor", version_parts.next().unwrap_or(0.0));
         context.insert("app.version.patch", version_parts.next().unwrap_or(0.0));
         context.insert("system.dark", crate::theme::is_dark_mode() as u8 as f64);
+        let (accent_r, accent_g, accent_b) = crate::theme::accent_color();
+        context.insert("system.accent.r", accent_r as f64);
+        context.insert("system.accent.g", accent_g as f64);
+        context.insert("system.accent.b", accent_b as f64);
         context.insert("data.poll_ok", runtime.poll_ok as u8 as f64);
         context.insert("data.has_error", runtime.has_error as u8 as f64);
         context.insert(
@@ -2449,6 +2468,32 @@ fn legacy_surface_nest() -> SurfaceNest {
     SurfaceNest::Auto
 }
 
+/// Token que um tema pode usar no lugar de um hex para acompanhar a cor de
+/// acento configurada no Windows, em vez de fixar uma cor própria.
+pub const SYSTEM_ACCENT_TOKEN: &str = "system.accent";
+
+/// Resolve a cor de um Paint: um hex comum, ou o acento vivo do sistema.
+fn resolve_color(source: &str, context: &DataContext) -> Option<Rgba> {
+    let Some(suffix) = source
+        .strip_prefix(SYSTEM_ACCENT_TOKEN)
+        .filter(|suffix| suffix.is_empty() || suffix.starts_with(':'))
+    else {
+        return parse_color(source);
+    };
+
+    // "system.accent" usa alfa cheio; "system.accent:80" aceita um alfa em hex.
+    let alpha = match suffix.strip_prefix(':') {
+        Some(value) => u8::from_str_radix(value, 16).ok()?,
+        None => 255,
+    };
+    Some(Rgba {
+        r: context.get("system.accent.r")? as u8,
+        g: context.get("system.accent.g")? as u8,
+        b: context.get("system.accent.b")? as u8,
+        a: alpha,
+    })
+}
+
 impl Paint {
     pub fn new(color: &str) -> Self {
         Self {
@@ -2457,7 +2502,7 @@ impl Paint {
         }
     }
     pub fn resolve(&self, context: &DataContext) -> Rgba {
-        let mut rgba = parse_color(&self.color).unwrap_or(Rgba {
+        let mut rgba = resolve_color(&self.color, context).unwrap_or(Rgba {
             r: 255,
             g: 0,
             b: 255,

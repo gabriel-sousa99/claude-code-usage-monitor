@@ -1805,3 +1805,37 @@ fn credit_badges_abbreviate_a_balance_too_wide_for_the_tray() {
         "1.2k"
     );
 }
+
+#[test]
+fn paint_follows_the_system_accent_when_asked_for_it() {
+    let mut context = DataContext::default();
+    context.insert("system.accent.r", 219.0);
+    context.insert("system.accent.g", 158.0);
+    context.insert("system.accent.b", 229.0);
+
+    let resolved = Paint::new(SYSTEM_ACCENT_TOKEN).resolve(&context);
+
+    assert_eq!((resolved.r, resolved.g, resolved.b), (219, 158, 229));
+    assert_eq!(resolved.a, 255);
+}
+
+#[test]
+fn system_accent_token_accepts_an_alpha_suffix() {
+    let mut context = DataContext::default();
+    context.insert("system.accent.r", 219.0);
+    context.insert("system.accent.g", 158.0);
+    context.insert("system.accent.b", 229.0);
+
+    let resolved = Paint::new(&format!("{SYSTEM_ACCENT_TOKEN}:80")).resolve(&context);
+
+    assert_eq!(resolved.a, 0x80);
+}
+
+#[test]
+fn a_plain_hex_paint_is_unaffected_by_the_accent_token() {
+    let context = DataContext::default();
+
+    let resolved = Paint::new("#D97757FF").resolve(&context);
+
+    assert_eq!((resolved.r, resolved.g, resolved.b), (0xD9, 0x77, 0x57));
+}
