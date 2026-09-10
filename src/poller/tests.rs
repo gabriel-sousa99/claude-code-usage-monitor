@@ -379,3 +379,26 @@ fn all_failed_providers_can_carry_their_previous_readings() {
     assert_eq!(claude.session.percentage, 21.0);
     assert!(claude.stale, "the carried reading must be marked stale");
 }
+
+const ONE_HOUR_MS: i64 = 3_600_000;
+
+#[test]
+fn cached_token_with_headroom_is_reused() {
+    assert!(claude::cache_entry_is_usable(Some(ONE_HOUR_MS), 0));
+}
+
+#[test]
+fn cached_token_past_expiry_is_discarded() {
+    assert!(!claude::cache_entry_is_usable(Some(ONE_HOUR_MS), ONE_HOUR_MS + 1));
+}
+
+#[test]
+fn cached_token_inside_expiry_margin_is_discarded() {
+    let expiry = 30_000;
+    assert!(!claude::cache_entry_is_usable(Some(expiry), 0));
+}
+
+#[test]
+fn cached_token_without_known_expiry_is_discarded() {
+    assert!(!claude::cache_entry_is_usable(None, 0));
+}

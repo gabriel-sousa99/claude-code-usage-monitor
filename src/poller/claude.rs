@@ -1,6 +1,7 @@
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
@@ -54,6 +55,7 @@ struct UsageBucket {
     resets_at: Option<String>,
 }
 
+#[derive(Clone)]
 struct Credentials {
     access_token: String,
     expires_at: Option<i64>,
@@ -73,6 +75,24 @@ enum CredentialSource {
 }
 
 pub(super) fn poll_claude_code() -> Result<UsageData, PollError> {
+    // Reusa o token do poll anterior enquanto ele ainda vale: relê-lo bateria
+    // em wsl.exe -d <distro>, que liga a distro inteira quando ela está
+    // parada só para ler o arquivo de credenciais.
+    if let Some(creds) = cached_credentials() {
+        match fetch_usage_with_fallback(&creds.access_token) {
+            Ok(data) => {
+                clear_cached_failures();
+                return Ok(data);
+            }
+            Err(error) => {
+                if !note_cached_failure() {
+                    return Err(error);
+                }
+                diagnose::log("cached token failed repeatedly; reading credentials again");
+            }
+        }
+    }
+
     let creds = match read_first_credentials() {
         Some(c) => c,
         None => {
@@ -83,7 +103,87 @@ pub(super) fn poll_claude_code() -> Result<UsageData, PollError> {
 
     let creds = refresh_or_fallback(creds)?;
 
+    store_credentials(&creds);
     fetch_usage_with_fallback(&creds.access_token)
+}
+
+/// Margem de segurança para nunca devolver um token em cache a milissegundos
+/// de expirar.
+const TOKEN_EXPIRY_MARGIN_MS: i64 = 60_000;
+
+/// Falhas consecutivas toleradas com o token em cache antes de descartá-lo e
+/// ler as credenciais de novo. Erro de rede é bem mais comum que token
+/// revogado, e descartar o cache na primeira falha reintroduziria os
+/// wakeups da distro que ele existe para evitar.
+const CACHE_FAILURE_TOLERANCE: u32 = 2;
+
+struct CredentialCache {
+    credentials: Option<Credentials>,
+    consecutive_failures: u32,
+}
+
+/// Últimas credenciais válidas conhecidas, reaproveitadas entre polls.
+static CREDENTIAL_CACHE: Mutex<CredentialCache> = Mutex::new(CredentialCache {
+    credentials: None,
+    consecutive_failures: 0,
+});
+
+fn cached_credentials() -> Option<Credentials> {
+    let cache = CREDENTIAL_CACHE.lock().ok()?;
+    let creds = cache.credentials.as_ref()?;
+    cache_entry_is_usable(creds.expires_at, now_millis()).then(|| creds.clone())
+}
+
+fn store_credentials(creds: &Credentials) {
+    if let Ok(mut cache) = CREDENTIAL_CACHE.lock() {
+        cache.credentials = Some(creds.clone());
+        cache.consecutive_failures = 0;
+    }
+}
+
+fn clear_cached_failures() {
+    if let Ok(mut cache) = CREDENTIAL_CACHE.lock() {
+        cache.consecutive_failures = 0;
+    }
+}
+
+/// Registra uma falha de fetch feita com o token em cache. Devolve `true`
+/// quando as falhas atingem [`CACHE_FAILURE_TOLERANCE`], ou seja, o cache foi
+/// descartado e quem chamou deve ler as credenciais de novo.
+fn note_cached_failure() -> bool {
+    let Ok(mut cache) = CREDENTIAL_CACHE.lock() else {
+        return false;
+    };
+
+    cache.consecutive_failures = cache.consecutive_failures.saturating_add(1);
+    if cache.consecutive_failures < CACHE_FAILURE_TOLERANCE {
+        return false;
+    }
+
+    cache.credentials = None;
+    cache.consecutive_failures = 0;
+    true
+}
+
+/// Se um token em cache ainda vale a pena ser reaproveitado.
+///
+/// Uma expiração desconhecida (`None`) é tratada como inutilizável de
+/// propósito: preferimos pagar um wakeup da distro a fixar um token cujo
+/// tempo de vida não conseguimos avaliar. Isso difere de [`is_token_expired`],
+/// onde `None` conta como válido — aquela função ordena credenciais recém
+/// lidas em `refresh_or_fallback`, uma decisão diferente.
+pub(super) fn cache_entry_is_usable(expires_at: Option<i64>, now_ms: i64) -> bool {
+    match expires_at {
+        Some(expiry) => now_ms + TOKEN_EXPIRY_MARGIN_MS < expiry,
+        None => false,
+    }
+}
+
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 pub(super) fn fetch_usage_with_fallback(token: &str) -> Result<UsageData, PollError> {
