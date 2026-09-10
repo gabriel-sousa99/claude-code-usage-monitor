@@ -72,7 +72,7 @@ pub(crate) fn configure_style(context: &egui::Context, language: LanguageId) {
     visuals.window_fill = egui::Color32::from_rgb(38, 38, 38);
     visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(48, 48, 48);
     visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(58, 58, 58);
-    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(65, 54, 51);
+    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(60, 52, 64);
     visuals.selection.bg_fill = egui::Color32::from_rgb(76, 78, 84);
     visuals.faint_bg_color = egui::Color32::from_rgb(37, 37, 37);
     // Text edits use `extreme_bg_color`, while dropdowns and numeric fields use
@@ -199,12 +199,20 @@ fn load_language_fonts(
     }
 }
 
+/// Lilás do Windows 11, no lugar do laranja do upstream, para o painel ficar
+/// coeso com o restante do sistema.
 pub(crate) fn accent() -> egui::Color32 {
-    egui::Color32::from_rgb(217, 119, 87)
+    egui::Color32::from_rgb(219, 158, 229)
 }
 
 pub(crate) fn accent_hover_border() -> egui::Color32 {
-    egui::Color32::from_rgb(157, 73, 45)
+    egui::Color32::from_rgb(158, 114, 165)
+}
+
+/// Cor de traço e ícone desenhados sobre o acento. O lilás é claro demais para
+/// receber os brancos usados sobre o laranja original.
+pub(crate) fn on_accent() -> egui::Color32 {
+    egui::Color32::from_rgb(26, 26, 26)
 }
 
 pub(crate) fn menu_surface() -> egui::Color32 {
@@ -292,7 +300,7 @@ pub(crate) fn menu_text() -> egui::Color32 {
 }
 
 pub(crate) fn asset_card_selected() -> egui::Color32 {
-    egui::Color32::from_rgb(57, 48, 46)
+    egui::Color32::from_rgb(54, 46, 58)
 }
 
 pub(crate) fn asset_card_surface() -> egui::Color32 {

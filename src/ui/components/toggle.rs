@@ -1,6 +1,8 @@
 use eframe::egui;
 
-use crate::ui::theme::{accent, toggle_inactive, toggle_inactive_hover, toggle_knob, toggle_label};
+use crate::ui::theme::{
+    accent, on_accent, toggle_inactive, toggle_inactive_hover, toggle_knob, toggle_label,
+};
 use crate::ui::tokens::{CONTROL_HEIGHT, TOGGLE_WIDTH};
 
 /// A compact boolean switch with caller-provided state labels.
@@ -55,7 +57,11 @@ impl<'a> Toggle<'a> {
         ui.painter().circle_filled(
             egui::pos2(knob_x, switch_rect.center().y),
             8.0,
-            toggle_knob(),
+            if *self.value {
+                on_accent()
+            } else {
+                toggle_knob()
+            },
         );
         ui.painter().text(
             egui::pos2(switch_rect.left() - 8.0, rect.center().y),
