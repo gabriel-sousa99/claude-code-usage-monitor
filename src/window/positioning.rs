@@ -217,6 +217,41 @@ pub(super) fn position_custom_theme(hwnd: HWND, theme: &ThemeDocument, scale: f6
     position_custom_theme_internal(hwnd, theme, scale);
 }
 
+/// Bounds a manual drag offset so it can never push a taskbar-docked
+/// surface past the taskbar's left edge. Mirrors the clamp the legacy
+/// (non-custom-theme) path has always applied in `position_at_taskbar`.
+pub(super) fn clamp_tray_drag_offset(
+    offset: i32,
+    tray_left: i32,
+    taskbar_left: i32,
+    width: i32,
+) -> i32 {
+    let max_offset = (tray_left - taskbar_left - width).max(0);
+    offset.clamp(0, max_offset)
+}
+
+/// Returns how far left (in screen pixels) a taskbar-docked surface should
+/// shift from its theme-anchored position because of a manual drag. Only
+/// the primary window is draggable, so every other surface (mirrors,
+/// themed tray icons, desktop-nested surfaces) gets 0 and is left
+/// untouched.
+fn apply_tray_drag_offset(hwnd: HWND, tray_left: i32, taskbar_left: i32, width: i32) -> i32 {
+    let mut state = lock_state();
+    let Some(s) = state.as_mut() else {
+        return 0;
+    };
+    if s.hwnd.to_hwnd() != hwnd {
+        return 0;
+    }
+    let clamped = clamp_tray_drag_offset(s.tray_offset, tray_left, taskbar_left, width);
+    if s.tray_offset != clamped {
+        s.tray_offset = clamped;
+        drop(state);
+        save_state_settings();
+    }
+    clamped
+}
+
 pub(super) fn position_custom_theme_internal(hwnd: HWND, theme: &ThemeDocument, scale: f64) {
     let taskbars = native_interop::find_taskbars();
     let displays = native_interop::find_monitors();
@@ -274,6 +309,18 @@ pub(super) fn position_custom_theme_internal(hwnd: HWND, theme: &ThemeDocument, 
         .placement
         .nest
         .resolve(theme.placement.reference.region);
+    // The mouse-drag handler in message_loop.rs persists manual horizontal
+    // nudges in AppState::tray_offset (still needed because Windows keeps
+    // rearranging the tray icons the widget docks against). Custom themes
+    // otherwise only look at the theme's static offset_x, so without this
+    // the drag looked like it worked but snapped back on the next
+    // reposition (tray icon change, DPI change, timer tick, ...).
+    let x = if nest == SurfaceNest::Taskbar {
+        let taskbar_left = taskbar.map(|t| t.rect.left).unwrap_or(reference.left);
+        x - apply_tray_drag_offset(hwnd, reference.left, taskbar_left, width)
+    } else {
+        x
+    };
     unsafe {
         match nest {
             SurfaceNest::Taskbar => {

@@ -1239,7 +1239,14 @@ fn total_widget_width_for_state(state: &AppState) -> i32 {
         .as_ref()
         .map_or(1, |theme| {
             let runtime = theme_runtime_for_surface(theme, 0, theme_runtime_from_state(state));
-            theme_engine::resolve_surface_size(theme, 0, state.data.as_ref(), runtime).0 as i32
+            let width =
+                theme_engine::resolve_surface_size(theme, 0, state.data.as_ref(), runtime).0;
+            // The theme expresses width/height in logical pixels; the window
+            // itself is sized and moved in physical pixels. Skipping this on
+            // a scaled monitor left callers positioning against the wrong
+            // (smaller) box, which is what made the widget drift while
+            // being dragged there.
+            scaled_theme_dimension(width, theme_surface_scale(theme, 0))
         })
 }
 
@@ -1560,7 +1567,9 @@ fn total_widget_height_for_state(state: &AppState) -> i32 {
         .as_ref()
         .map_or(1, |theme| {
             let runtime = theme_runtime_for_surface(theme, 0, theme_runtime_from_state(state));
-            theme_engine::resolve_surface_size(theme, 0, state.data.as_ref(), runtime).1 as i32
+            let height =
+                theme_engine::resolve_surface_size(theme, 0, state.data.as_ref(), runtime).1;
+            scaled_theme_dimension(height, theme_surface_scale(theme, 0))
         })
 }
 

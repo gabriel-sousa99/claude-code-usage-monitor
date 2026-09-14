@@ -83,6 +83,29 @@ fn tray_widget_action_targets_a_custom_theme_root_without_a_main_id() {
 }
 
 #[test]
+fn tray_drag_offset_is_kept_as_is_while_it_fits_left_of_the_tray() {
+    // taskbar 0..1920, tray icons start at x=1700, widget is 220px wide:
+    // the widget can shift left by up to 1700 - 0 - 220 = 1480px.
+    assert_eq!(clamp_tray_drag_offset(150, 1700, 0, 220), 150);
+    assert_eq!(clamp_tray_drag_offset(0, 1700, 0, 220), 0);
+}
+
+#[test]
+fn tray_drag_offset_is_reclamped_when_the_tray_region_shrinks() {
+    // The user dragged the widget 500px left of its docked position, then
+    // Windows grew the tray region (more icons appeared), shrinking the
+    // room left of it to 1700 - 1400 - 220 = 80px. Without re-clamping on
+    // every reposition, the widget would keep the stale 500px offset and
+    // drift off the taskbar's left edge instead of settling at the new max.
+    assert_eq!(clamp_tray_drag_offset(500, 1700, 1400, 220), 80);
+}
+
+#[test]
+fn tray_drag_offset_never_goes_negative() {
+    assert_eq!(clamp_tray_drag_offset(-40, 1700, 0, 220), 0);
+}
+
+#[test]
 fn fullscreen_bounds_cover_the_monitor_but_maximized_work_area_does_not() {
     let monitor = RECT {
         left: 0,
