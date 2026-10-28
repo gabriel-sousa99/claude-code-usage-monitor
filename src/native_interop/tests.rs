@@ -269,3 +269,82 @@ fn detaching_a_child_never_exposes_parent_relative_coordinates_as_a_popup() {
         UnregisterClassW(PCWSTR(class.as_ptr()), Some(instance.into())).unwrap();
     }
 }
+
+#[test]
+fn shell_flyout_does_not_remove_a_still_live_taskbar_from_discovery() {
+    let remembered = [11isize];
+    let current_rect = rect(0, 912, 1536, 960);
+    let found = recover_taskbars(Vec::new(), &remembered, |handle| {
+        assert_eq!(handle, HWND(11 as *mut _));
+        Some(taskbar(11, current_rect, true))
+    });
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].hwnd, HWND(11 as *mut _));
+    assert_eq!(found[0].rect, current_rect);
+}
+
+#[test]
+fn taskbar_recovery_drops_destroyed_hosts_and_does_not_duplicate_enumerated_hosts() {
+    let current = taskbar(22, rect(0, 912, 1536, 960), true);
+    let found = recover_taskbars(vec![current], &[11, 22], |handle| {
+        assert_ne!(
+            handle, current.hwnd,
+            "an enumerated host needs no fallback lookup"
+        );
+        None
+    });
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].hwnd, current.hwnd);
+}
+
+#[test]
+fn taskbar_recovery_prefers_the_enumerated_replacement_primary() {
+    let current = taskbar(22, rect(0, 912, 1536, 960), true);
+    let secondary = taskbar(33, rect(-1536, 912, 0, 960), false);
+    let found = recover_taskbars(vec![current], &[11, 33], |handle| {
+        Some(if handle == secondary.hwnd {
+            secondary
+        } else {
+            taskbar(11, rect(0, 912, 1536, 960), true)
+        })
+    });
+    assert_eq!(found.len(), 2);
+    assert_eq!(found[0].hwnd, current.hwnd);
+    assert_eq!(found[1].hwnd, secondary.hwnd);
+}
+
+#[test]
+fn taskbar_fallback_rejects_invalid_handles_and_unrelated_window_classes() {
+    assert!(taskbar_window(HWND::default()).is_none());
+    let class = wide_str("STATIC");
+    unsafe {
+        let hwnd = CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            PCWSTR(class.as_ptr()),
+            PCWSTR::null(),
+            WS_POPUP,
+            0,
+            0,
+            10,
+            10,
+            None,
+            None,
+            Some(GetModuleHandleW(PCWSTR::null()).unwrap().into()),
+            None,
+        )
+        .unwrap();
+        assert!(taskbar_window(hwnd).is_none());
+        DestroyWindow(hwnd).unwrap();
+        assert!(taskbar_window(hwnd).is_none());
+    }
+}
+
+#[test]
+fn taskbar_recovery_prefers_the_enumerated_replacement_secondary() {
+    let current = taskbar(22, rect(-1536, 912, 0, 960), false);
+    for old_rect in [current.rect, rect(-1536, 911, 0, 959)] {
+        let found = recover_taskbars(vec![current], &[11], |_| Some(taskbar(11, old_rect, false)));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].hwnd, current.hwnd);
+    }
+}

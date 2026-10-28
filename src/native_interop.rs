@@ -146,30 +146,49 @@ pub fn monitor_device_name(monitor: HMONITOR) -> Option<String> {
     (len > 0).then(|| String::from_utf16_lossy(&info.szDevice[..len]))
 }
 
+// The shell can temporarily omit a live taskbar from EnumWindows while a
+// flyout is open. Remember handles, not geometry, and revalidate every fallback.
+static TASKBAR_HOSTS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+
+fn taskbar_window(hwnd: HWND) -> Option<TaskbarWindow> {
+    if !unsafe { IsWindow(Some(hwnd)).as_bool() } {
+        return None;
+    }
+    let primary = match window_class_name(hwnd)?.as_str() {
+        "Shell_TrayWnd" => true,
+        "Shell_SecondaryTrayWnd" => false,
+        _ => return None,
+    };
+    Some(TaskbarWindow {
+        hwnd,
+        rect: get_taskbar_rect(hwnd)?,
+        primary,
+    })
+}
+
 pub fn find_taskbars() -> Vec<TaskbarWindow> {
     unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let taskbars = &mut *(lparam.0 as *mut Vec<TaskbarWindow>);
-        let mut class_name = [0u16; 64];
-        let len = unsafe { GetClassNameW(hwnd, &mut class_name) };
-        if len > 0 {
-            let class_name = String::from_utf16_lossy(&class_name[..len as usize]);
-            if class_name == "Shell_TrayWnd" || class_name == "Shell_SecondaryTrayWnd" {
-                if let Some(rect) = get_taskbar_rect(hwnd) {
-                    taskbars.push(TaskbarWindow {
-                        hwnd,
-                        rect,
-                        primary: class_name == "Shell_TrayWnd",
-                    });
-                }
-            }
+        if let Some(taskbar) = taskbar_window(hwnd) {
+            taskbars.push(taskbar);
         }
         BOOL(1)
     }
 
-    let mut taskbars: Vec<TaskbarWindow> = Vec::new();
+    let mut taskbars = Vec::new();
     unsafe {
         let _ = EnumWindows(Some(enum_proc), LPARAM(&mut taskbars as *mut _ as isize));
     }
+    // Release the cache lock before native calls, which may reenter shell code.
+    let remembered = TASKBAR_HOSTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let mut taskbars = recover_taskbars(taskbars, &remembered, taskbar_window);
+    *TASKBAR_HOSTS.lock().unwrap_or_else(|e| e.into_inner()) = taskbars
+        .iter()
+        .map(|taskbar| taskbar.hwnd.0 as isize)
+        .collect();
     taskbars.sort_by_key(|taskbar| {
         (
             taskbar.rect.top,
@@ -179,6 +198,31 @@ pub fn find_taskbars() -> Vec<TaskbarWindow> {
         )
     });
     taskbars
+}
+
+fn recover_taskbars(
+    mut discovered: Vec<TaskbarWindow>,
+    remembered: &[isize],
+    mut lookup: impl FnMut(HWND) -> Option<TaskbarWindow>,
+) -> Vec<TaskbarWindow> {
+    for &handle in remembered {
+        let hwnd = HWND(handle as *mut _);
+        if discovered.iter().any(|taskbar| taskbar.hwnd == hwnd) {
+            continue;
+        }
+        if let Some(taskbar) = lookup(hwnd) {
+            // Prefer an enumerated replacement over a remembered host occupying
+            // the same taskbar space, including during secondary-bar recreation.
+            if discovered.iter().any(|current| {
+                current.primary == taskbar.primary
+                    && (taskbar.primary || rect_overlap_area(current.rect, taskbar.rect) > 0)
+            }) {
+                continue;
+            }
+            discovered.push(taskbar);
+        }
+    }
+    discovered
 }
 
 /// Assign each taskbar to at most one display. Explorer can leave a secondary
