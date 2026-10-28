@@ -3,13 +3,13 @@
 ![Windows](https://img.shields.io/badge/plataforma-Windows-blue)
 [![Licença: MIT](https://img.shields.io/badge/Licenca-MIT-yellow.svg)](LICENSE)
 
-Widget leve para a barra de tarefas do Windows que monitora os limites de uso do Claude Code e o horário de reset. Também exibe uso do Codex, Google Antigravity, OpenCode Go e Cursor.
+Widget leve para a barra de tarefas do Windows que monitora os limites de uso do Claude Code e o horário de reset. Também exibe uso do Codex, Google Antigravity, OpenCode Go, Cursor, Grok Build e GitHub Copilot.
 
 ![Claude Code Usage Monitor rodando na barra de tarefas do Windows](.github/animation.gif)
 
 ## Sobre este fork
 
-Este repositório é um fork de [CodeZeno/Claude-Code-Usage-Monitor](https://github.com/CodeZeno/Claude-Code-Usage-Monitor), sincronizado com a v2.10.21 do projeto original.
+Este repositório é um fork de [CodeZeno/Claude-Code-Usage-Monitor](https://github.com/CodeZeno/Claude-Code-Usage-Monitor), sincronizado com a v2.22.4 do projeto original.
 
 Diferenças em relação ao upstream:
 
@@ -18,14 +18,27 @@ Diferenças em relação ao upstream:
 - **Cache de credenciais OAuth**: evita religar a distro WSL a cada ciclo de poll só para ler o token — o token fica em cache em memória enquanto for válido (ver "Sobre o cache OAuth" abaixo).
 - **Diagnóstico não loga argumentos de CLI**: `--diagnose` grava o log sem incluir os argumentos de linha de comando recebidos pelo processo.
 
-O upstream, entre a v1.3.1 (onde este fork havia parado) e a v2.10.21, deixou de ser só um monitor do Claude Code e passou a suportar múltiplos provedores (Codex, Antigravity, OpenCode, Cursor) com um Theme Studio completo para customização visual. Este fork adotou essa base inteira — a customização visual do widget (cor, borda, espaçamento, layout tipo cápsula), que antes era feita direto no menu de contexto, hoje é responsabilidade do **Theme Studio** (`claude-code-usage-monitor --dashboard`, aba de temas), não deste fork.
+A sincronização com a v2.22.4 (commit `5765b54`) incorpora todas as novidades e correções dessa base. O tema padrão continua sendo **Cápsula**, com a variante **Cápsula Laranja** editável e o acento lilás no painel. Os temas Classic, Classic Vertical e Compact Fluent Quad do upstream também estão disponíveis.
 
-**Pendência conhecida, não portada**: o commit original do fork que exibia o countdown como "4h 32m" (horas e minutos) não foi reaplicado. No upstream atual esse texto é montado por uma função Rust (`format_usage_line`) compartilhada por todos os provedores, e as caixas de texto do tema não têm ajuste automático de largura — mudar o formato sem conseguir renderizar o widget arrisca cortar o texto na tela. Quem quiser esse formato deve validar visualmente no Windows antes de portar.
+O arraste horizontal e os ajustes de DPI anteriores passam a usar o posicionamento do upstream: arraste livre, encaixe magnético, bloqueio na barra de tarefas e recuperação após reinício do Explorer ou mudança de monitor.
+
+## Novidades incorporadas na v2.22.4
+
+- Múltiplas contas de Claude Code e Codex, com limites e erros isolados por conta.
+- Grok Build e GitHub Copilot como provedores adicionais.
+- Opção de exibir uso consumido ou saldo restante em **Configurações → Exibição**, inclusive nos temas Cápsula.
+- Theme Studio com Builder unificado e busca; novos temas Compact Fluent Quad e Classic Vertical.
+- Pools separados do Antigravity (Gemini e Claude/GPT), cotas Gemini 4 Argon e limites individuais do Codex, incluindo Fable nos temas horizontais.
+- Intervalos personalizados de atualização, respeito a `Retry-After` e recuperação de falhas transitórias.
+- Melhorias na leitura de credenciais do Claude Desktop, no período de cobrança do Cursor, nos tooltips e na estabilidade do widget.
+- Renderização alternativa por Direct3D quando OpenGL falha, além das atualizações de dependências e correções de TLS do upstream.
+
+Consulte o [histórico completo](CHANGELOG.md) e o [guia do upstream](USER_GUIDE.md) para os detalhes. As opções de atualização do aplicativo descritas nesse guia permanecem desativadas neste fork.
 
 ## Funcionalidades
 
 - Mostra o uso atual e o tempo até cada limite resetar
-- Suporta Claude Code, Codex, Google Antigravity, OpenCode Go e Cursor
+- Suporta Claude Code, Codex, Google Antigravity, OpenCode Go, Cursor, Grok Build e GitHub Copilot
 - Fica na barra de tarefas do Windows, com controles rápidos na bandeja do sistema
 - Suporta múltiplos monitores e inicialização com o Windows
 - Intervalo de atualização, provedores e idioma configuráveis
@@ -68,13 +81,15 @@ Use o dashboard para escolher provedores, mudar o intervalo de atualização, es
 | Google Antigravity | Faça login no Antigravity, depois ative em **Provedores**. |
 | OpenCode Go | Conecte uma conta OpenCode Go, configure as credenciais descritas abaixo, depois ative o OpenCode em **Provedores**. |
 | Cursor | Faça login no Cursor, depois ative em **Provedores**. A sessão local é detectada automaticamente. |
+| Grok Build | Execute `grok login` na CLI e ative o Grok em **Provedores**. |
+| GitHub Copilot | Faça login na CLI do Copilot (`/login`) ou na CLI do GitHub (`gh auth login`) e ative em **Provedores**. |
 
 Para o OpenCode Go, defina `OPENCODE_GO_WORKSPACE_ID` e `OPENCODE_GO_AUTH_COOKIE`, ou crie `%APPDATA%\opencode-go\config.json`:
 
 ```json
 {
   "workspaceId": "wrk_01...",
-  "authCookie": "seu-cookie-de-autenticacao-opencode"
+  "authCookie": "__Host-console_session=seu-cookie-de-sessao"
 }
 ```
 
@@ -108,7 +123,7 @@ O log de diagnóstico é gravado em `%TEMP%\claude-code-usage-monitor.log`. As c
 
 ### No Windows
 
-Instale o [Rust](https://www.rust-lang.org/tools/install) 1.95 ou mais recente e rode:
+Instale o [Rust](https://www.rust-lang.org/tools/install) 1.95.0 (fixado em `rust-toolchain.toml`) e rode:
 
 ```powershell
 cargo build --release
@@ -134,7 +149,7 @@ RUSTFLAGS="-L $HOME/.local/mingw-shims/lib-ci" \
 cargo build --target x86_64-pc-windows-gnu
 ```
 
-Os dois symlinks e o overlay de lib existem para contornar diferenças entre o toolchain do mingw-w64 do Linux e o que a crate `winres` (build de recursos do `.exe`) e a crate `windows` (nomes de biblioteca do Windows SDK) esperam encontrar por padrão em cross-compile.
+Os dois symlinks e o overlay de lib existem para contornar diferenças entre o toolchain do mingw-w64 do Linux e o que a crate `winresource` (build de recursos do `.exe`) e a crate `windows` (nomes de biblioteca do Windows SDK) esperam encontrar por padrão em cross-compile.
 
 Isso valida que o código compila e os testes montam (`cargo test --target x86_64-pc-windows-gnu --no-run`), mas **não roda os testes nem o app** — para isso, ainda é preciso Windows (ou um runner Wine configurado, não coberto aqui).
 

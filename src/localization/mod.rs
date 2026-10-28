@@ -72,7 +72,10 @@ impl LanguageId {
     pub fn provider_auth_error(self, provider: ProviderId) -> (&'static str, &'static str) {
         let strings = self.strings();
         match provider {
-            ProviderId::Claude => (strings.token_expired_title, strings.token_expired_body),
+            ProviderId::Claude => (
+                strings.token_expired_title,
+                self.text("Sign in again with the Claude desktop app or run 'claude' and use '/login' for your CLI account. Then refresh this monitor."),
+            ),
             ProviderId::Codex => (
                 strings.codex_token_expired_title,
                 strings.codex_token_expired_body,
@@ -88,6 +91,14 @@ impl LanguageId {
             ProviderId::Cursor => (
                 strings.cursor_token_expired_title,
                 strings.cursor_token_expired_body,
+            ),
+            ProviderId::Grok => (
+                strings.grok_token_expired_title,
+                strings.grok_token_expired_body,
+            ),
+            ProviderId::Copilot => (
+                strings.copilot_token_expired_title,
+                strings.copilot_token_expired_body,
             ),
         }
     }
@@ -136,6 +147,8 @@ pub struct Strings {
     pub antigravity_model: &'static str,
     pub opencode_model: &'static str,
     pub cursor_model: &'static str,
+    pub grok_model: &'static str,
+    pub copilot_model: &'static str,
     pub settings: &'static str,
     pub start_with_windows: &'static str,
     pub language: &'static str,
@@ -171,10 +184,16 @@ pub struct Strings {
     pub opencode_token_expired_body: &'static str,
     pub cursor_token_expired_title: &'static str,
     pub cursor_token_expired_body: &'static str,
+    pub grok_token_expired_title: &'static str,
+    pub grok_token_expired_body: &'static str,
+    pub copilot_token_expired_title: &'static str,
+    pub copilot_token_expired_body: &'static str,
     pub codex_window_title: &'static str,
     pub antigravity_window_title: &'static str,
     pub opencode_window_title: &'static str,
     pub cursor_window_title: &'static str,
+    pub grok_window_title: &'static str,
+    pub copilot_window_title: &'static str,
 }
 
 pub fn resolve_language(language_override: Option<LanguageId>) -> LanguageId {
@@ -300,7 +319,7 @@ mod tests {
             "All files",
             "Theme Studio packages",
             "Images",
-            "Action helper",
+            "Builder",
             "Build safe mouse actions that affect layers at runtime.",
             "Choose one action for this context menu item.",
             "Enter actions...",

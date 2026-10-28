@@ -37,7 +37,7 @@ pub(super) fn context_menu_label_editor(
                     .max_height(420.0)
                     .show(ui, |ui| {
                         let mut last_group = "";
-                        for value in TEXT_TEMPLATE_VALUES.iter().copied() {
+                        for value in text_template_choices(context, language) {
                             if value.group != last_group {
                                 if !last_group.is_empty() {
                                     ui.add_space(6.0);
@@ -51,10 +51,10 @@ pub(super) fn context_menu_label_editor(
                                 last_group = value.group;
                             }
                             let format = default_text_template_format(value.kind);
-                            let token = text_template_token(value.expression, format);
-                            let sample = text_template_value_sample(value, format, context);
+                            let token = text_template_token(&value.expression, format);
+                            let sample = text_template_value_sample(&value, format, context);
                             if ui
-                                .button(format!("{}  —  {}", language.text(value.label), sample))
+                                .button(format!("{}  —  {}", value.label, sample))
                                 .on_hover_text(&token)
                                 .clicked()
                             {
@@ -321,7 +321,10 @@ pub(super) fn context_menu_action_script(action: &ContextMenuAction) -> String {
         ContextMenuAction::ToggleProvider { provider } => {
             format!("toggle_provider({})", provider.descriptor().key)
         }
+        ContextMenuAction::ToggleAntigravityGemini => "toggle_antigravity_gemini()".into(),
+        ContextMenuAction::ToggleAntigravityExternal => "toggle_antigravity_external()".into(),
         ContextMenuAction::ToggleStartup => "toggle_startup()".into(),
+        ContextMenuAction::ToggleTaskbarLock => "toggle_taskbar_lock()".into(),
         ContextMenuAction::ToggleWidget => "toggle_widget()".into(),
         ContextMenuAction::LegacyResetPosition => String::new(),
         ContextMenuAction::SetLanguage { language } => {
@@ -348,8 +351,17 @@ pub(super) fn parse_context_menu_action_script(script: &str) -> Result<ContextMe
         ("open_dashboard", ContextMenuAction::OpenDashboard),
         ("refresh", ContextMenuAction::Refresh),
         ("toggle_startup", ContextMenuAction::ToggleStartup),
+        ("toggle_taskbar_lock", ContextMenuAction::ToggleTaskbarLock),
         ("toggle_widget", ContextMenuAction::ToggleWidget),
         ("check_for_updates", ContextMenuAction::CheckForUpdates),
+        (
+            "toggle_antigravity_gemini",
+            ContextMenuAction::ToggleAntigravityGemini,
+        ),
+        (
+            "toggle_antigravity_external",
+            ContextMenuAction::ToggleAntigravityExternal,
+        ),
         ("exit", ContextMenuAction::Exit),
     ] {
         if script == format!("{name}()") {
@@ -421,158 +433,7 @@ pub(super) fn parse_context_menu_action_script(script: &str) -> Result<ContextMe
         }
         return Ok(ContextMenuAction::OpenUrl { url });
     }
-    Err("Choose an action from the helper, or enter a supported action".into())
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn context_menu_action_reference_panels(
-    ui: &mut egui::Ui,
-    height: f32,
-    layer_targets: &[(String, String)],
-    target: &mut String,
-    property: &mut MouseActionProperty,
-    value: &mut String,
-    draft: &mut String,
-    language: LanguageId,
-) {
-    let gap = ui.spacing().item_spacing.x;
-    let panel_width = ((ui.available_width() - gap * 2.0) / 3.0).max(1.0);
-    ui.horizontal(|ui| {
-        expression_reference_card(ui, panel_width, height, language.text("Actions"), |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt("context-menu-helper-actions")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    for kind in ContextMenuActionKind::ALL {
-                        if ui.button(language.text(kind.label())).clicked() {
-                            *draft = context_menu_action_script(&kind.default_action());
-                        }
-                    }
-                    ui.separator();
-                    ui.label(egui::RichText::new(language.text("Layer actions")).small().strong());
-                    let mut set_layer_action = |source: String| {
-                        *draft = context_menu_action_script(&ContextMenuAction::LayerActions {
-                            actions: source,
-                        });
-                    };
-                    if ui.button(language.text("Set property")).clicked() {
-                        set_layer_action(format!(
-                            "set({target}, {}, {})",
-                            property.name(),
-                            value.trim()
-                        ));
-                    }
-                    if ui
-                        .add_enabled(
-                            *property == MouseActionProperty::Render,
-                            egui::Button::new(language.text("Toggle property")),
-                        )
-                        .clicked()
-                    {
-                        set_layer_action(format!("toggle({target}, {})", property.name()));
-                    }
-                    if ui.button(language.text("Reset property")).clicked() {
-                        set_layer_action(format!("reset({target}, {})", property.name()));
-                    }
-                    let numeric = *property != MouseActionProperty::Render;
-                    if ui
-                        .add_enabled(numeric, egui::Button::new(language.text("Increase value")))
-                        .clicked()
-                    {
-                        set_layer_action(format!(
-                            "increase({target}, {}, {})",
-                            property.name(),
-                            value.trim()
-                        ));
-                    }
-                    if ui
-                        .add_enabled(numeric, egui::Button::new(language.text("Decrease value")))
-                        .clicked()
-                    {
-                        set_layer_action(format!(
-                            "decrease({target}, {}, {})",
-                            property.name(),
-                            value.trim()
-                        ));
-                    }
-                });
-        });
-        expression_reference_card(ui, panel_width, height, language.text("Options"), |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt("context-menu-helper-options")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.label(egui::RichText::new(language.text("Update frequency")).small().strong());
-                    for (seconds, label) in [
-                        (POLL_1_MIN_SECONDS, "Every minute"),
-                        (POLL_5_MIN_SECONDS, "Every 5 minutes"),
-                        (POLL_15_MIN_SECONDS, "Every 15 minutes"),
-                        (POLL_1_HOUR_SECONDS, "Every hour"),
-                    ] {
-                        if ui.button(language.text(label)).clicked() {
-                            *draft = format!("set_update_frequency({seconds})");
-                        }
-                    }
-                    ui.separator();
-                    ui.label(egui::RichText::new(language.text("Provider")).small().strong());
-                    for descriptor in PROVIDER_DESCRIPTORS {
-                        if ui.button(language.text(descriptor.display_name)).clicked() {
-                            *draft = format!("toggle_provider({})", descriptor.key);
-                        }
-                    }
-                    ui.separator();
-                    ui.label(
-                        egui::RichText::new(language.text("Edit quoted values in the action field for URLs, languages, and layer-action scripts."))
-                            .small()
-                            .color(muted()),
-                    );
-                });
-        });
-        expression_reference_card(ui, panel_width, height, language.text("Layers"), |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt("context-menu-helper-layers")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    if ui
-                        .selectable_label(target == "self", language.text("Self"))
-                        .clicked()
-                    {
-                        *target = "self".into();
-                    }
-                    for (id, name) in layer_targets {
-                        let token = format!(
-                            "\"{}\"",
-                            id.replace('\\', "\\\\").replace('"', "\\\"")
-                        );
-                        if ui
-                            .selectable_label(*target == token, format!("{name}  ·  {id}"))
-                            .clicked()
-                        {
-                            *target = token;
-                        }
-                    }
-                    ui.separator();
-                    ui.label(egui::RichText::new(language.text("Properties")).small().strong());
-                    for candidate in MouseActionProperty::ALL {
-                        let label = match candidate {
-                            MouseActionProperty::Render => language.text("Render"),
-                            MouseActionProperty::Visibility => language.text("Visibility"),
-                            MouseActionProperty::X => language.text("X"),
-                            MouseActionProperty::Y => language.text("Y"),
-                            MouseActionProperty::Width => language.text("Width"),
-                            MouseActionProperty::Height => language.text("Height"),
-                            MouseActionProperty::Rotation => language.text("Rotation"),
-                        };
-                        if ui.selectable_label(*property == candidate, label).clicked() {
-                            *property = candidate;
-                        }
-                    }
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new(language.text("Value expression")).small().color(muted()));
-                    ui.add(singleline_text_edit(value).desired_width(ui.available_width()));
-                });
-        });
-    });
+    Err("Choose an action in Builder, or enter a supported action".into())
 }
 
 #[allow(dead_code)]

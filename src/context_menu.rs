@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::providers::ProviderId;
+use crate::theme_engine::{self, DataContext, Expression};
 
 pub const CONTEXT_MENU_SCHEMA_VERSION: u32 = 1;
 pub const CLASSIC_CONTEXT_MENU_ID: &str = "classic-v1";
@@ -27,6 +28,8 @@ pub struct ContextMenuItem {
     pub id: String,
     #[serde(default)]
     pub label: String,
+    #[serde(default = "theme_engine::default_render")]
+    pub render: Expression,
     #[serde(flatten)]
     pub kind: ContextMenuItemKind,
 }
@@ -61,7 +64,10 @@ pub enum ContextMenuAction {
     ToggleProvider {
         provider: ContextMenuProvider,
     },
+    ToggleAntigravityGemini,
+    ToggleAntigravityExternal,
     ToggleStartup,
+    ToggleTaskbarLock,
     ToggleWidget,
     /// Accepted only so menus saved by older versions can be loaded and
     /// cleaned up. New menus cannot create or execute this legacy action.
@@ -108,10 +114,17 @@ pub struct ContextMenuDescriptor {
 }
 
 impl ContextMenuItem {
+    /// Invalid conditions hide the item, including a submenu's entire subtree.
+    pub fn should_render(&self, context: &DataContext) -> bool {
+        theme_engine::evaluate(&self.render.0, context)
+            .is_ok_and(|value| value.is_finite() && value != 0.0)
+    }
+
     pub fn action(id: &str, label: &str, action: ContextMenuAction) -> Self {
         Self {
             id: id.into(),
             label: label.into(),
+            render: theme_engine::default_render(),
             kind: ContextMenuItemKind::Action { action },
         }
     }
@@ -120,6 +133,7 @@ impl ContextMenuItem {
         Self {
             id: id.into(),
             label: String::new(),
+            render: theme_engine::default_render(),
             kind: ContextMenuItemKind::Separator,
         }
     }
@@ -128,6 +142,7 @@ impl ContextMenuItem {
         Self {
             id: id.into(),
             label: label.into(),
+            render: theme_engine::default_render(),
             kind: ContextMenuItemKind::Text,
         }
     }
@@ -136,6 +151,7 @@ impl ContextMenuItem {
         Self {
             id: id.into(),
             label: label.into(),
+            render: theme_engine::default_render(),
             kind: ContextMenuItemKind::Submenu { items },
         }
     }
@@ -202,9 +218,15 @@ fn validate_items(
         errors.push("Context menus support at most six nested levels".into());
         return;
     }
+    let context = DataContext::from_usage(None, &theme_engine::Canvas::default());
     for item in items {
         if item.id.trim().is_empty() || !ids.insert(item.id.to_ascii_lowercase()) {
             errors.push(format!("Menu item '{}' needs a unique id", item.label));
+        }
+        match theme_engine::evaluate(&item.render.0, &context) {
+            Ok(value) if value.is_finite() => {}
+            Ok(_) => errors.push(format!("{}.render did not produce a finite value", item.id)),
+            Err(error) => errors.push(format!("{}.render: {error}", item.id)),
         }
         match &item.kind {
             ContextMenuItemKind::Separator => {}
@@ -292,6 +314,8 @@ pub fn rendered_label(
         "Antigravity" => language.text("Antigravity"),
         "OpenCode" => language.text("OpenCode"),
         "Cursor" => language.text("Cursor"),
+        "Grok" => language.text("Grok"),
+        "Copilot" => language.text("Copilot"),
         "Open Dashboard" => language.text("Open Dashboard"),
         "Every minute" => language.text("Every minute"),
         "Every 5 minutes" => language.text("Every 5 minutes"),
@@ -299,6 +323,7 @@ pub fn rendered_label(
         "Every hour" => language.text("Every hour"),
         "Providers" => language.text("Providers"),
         "Check for updates" => language.text("Check for updates"),
+        "Lock in taskbar" => language.text("Lock in taskbar"),
         "Show widget" => language.text("Show widget"),
         _ => label,
     };
@@ -362,11 +387,14 @@ pub fn classic_context_menu() -> ContextMenuDocument {
                 },
             ),
             ContextMenuItem::action(
-                "provider-antigravity",
-                "Antigravity",
-                Action::ToggleProvider {
-                    provider: Provider::Antigravity,
-                },
+                "provider-antigravity-gemini",
+                "Antigravity (Gemini)",
+                Action::ToggleAntigravityGemini,
+            ),
+            ContextMenuItem::action(
+                "provider-antigravity-external",
+                "Antigravity (Claude + GPT)",
+                Action::ToggleAntigravityExternal,
             ),
             ContextMenuItem::action(
                 "provider-opencode",
@@ -380,6 +408,20 @@ pub fn classic_context_menu() -> ContextMenuDocument {
                 "Cursor",
                 Action::ToggleProvider {
                     provider: Provider::Cursor,
+                },
+            ),
+            ContextMenuItem::action(
+                "provider-grok",
+                "Grok",
+                Action::ToggleProvider {
+                    provider: Provider::Grok,
+                },
+            ),
+            ContextMenuItem::action(
+                "provider-copilot",
+                "Copilot",
+                Action::ToggleProvider {
+                    provider: Provider::Copilot,
                 },
             ),
         ],
@@ -414,6 +456,7 @@ pub fn classic_context_menu() -> ContextMenuDocument {
                 "Start with Windows",
                 Action::ToggleStartup,
             ),
+            ContextMenuItem::action("lock-taskbar", "Lock in taskbar", Action::ToggleTaskbarLock),
             ContextMenuItem::submenu("language", "Language", languages),
         ],
     );
@@ -675,6 +718,12 @@ mod tests {
         assert!(serde_json::to_string(&menu)
             .unwrap()
             .contains("provider-cursor"));
+        assert!(serde_json::to_string(&menu)
+            .unwrap()
+            .contains("provider-grok"));
+        assert!(serde_json::to_string(&menu)
+            .unwrap()
+            .contains("provider-copilot"));
         assert!(menu.items.iter().any(|item| {
             item.id == "toggle-widget"
                 && matches!(
@@ -799,5 +848,68 @@ mod tests {
             ContextMenuItem::text("usage", "v{app.version} - {claude.session:usage_line}"),
         );
         assert!(menu.validate().is_empty());
+    }
+
+    #[test]
+    fn monthly_menu_labels_validate_without_live_usage() {
+        let mut menu = classic_context_menu();
+        for provider in ProviderId::ALL {
+            let name = provider.descriptor().key;
+            let mut item = ContextMenuItem::text(
+                &format!("{name}-monthly"),
+                &format!("{{{name}.monthly.label}}: {{{name}.monthly.remaining:0}}% left"),
+            );
+            item.render = Expression(format!(
+                "providers.{name}.enabled && {name}.monthly.available"
+            ));
+            menu.items.push(item);
+        }
+        assert!(menu.validate().is_empty(), "{:?}", menu.validate());
+    }
+
+    #[test]
+    fn legacy_items_default_to_visible_and_conditions_round_trip() {
+        let mut item: ContextMenuItem =
+            serde_json::from_str(r#"{"id":"usage","type":"text","label":"Usage"}"#).unwrap();
+        let mut context = DataContext::from_usage(None, &theme_engine::Canvas::default());
+        assert!(item.should_render(&context));
+        assert_eq!(item.render.0, "1");
+        item.render = Expression("providers.codex.enabled && codex.weekly.available".into());
+        let encoded = serde_json::to_string(&item).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ContextMenuItem>(&encoded).unwrap(),
+            item
+        );
+        context.insert("providers.codex.enabled", 1.0);
+        assert!(!item.should_render(&context));
+        context.insert("codex.weekly.available", 1.0);
+        assert!(item.should_render(&context));
+        context.insert("providers.codex.enabled", 0.0);
+        assert!(!item.should_render(&context));
+    }
+
+    #[test]
+    fn menu_render_rejects_invalid_values_and_hides_falsy_rows() {
+        let context = DataContext::from_usage(None, &theme_engine::Canvas::default());
+        let mut menu = classic_context_menu();
+        for source in ["missing.variable", "1 +", "sqrt(-1)", "\"text\""] {
+            menu.items[0].render = Expression(source.into());
+            assert!(!menu.items[0].should_render(&context));
+            assert!(menu
+                .validate()
+                .iter()
+                .any(|error| error.contains(".render")));
+        }
+        let item = &mut menu.items[0];
+        for (render, visible) in [
+            ("0", false),
+            ("false", false),
+            ("-1", true),
+            ("1", true),
+            ("true", true),
+        ] {
+            item.render = Expression(render.into());
+            assert_eq!(item.should_render(&context), visible);
+        }
     }
 }

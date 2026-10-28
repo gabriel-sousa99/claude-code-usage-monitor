@@ -11,13 +11,98 @@ use windows::Win32::System::Threading::{
     INFINITE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, MessageBoxW, PostMessageW, SetForegroundWindow, ShowWindow, MB_ICONERROR, MB_OK,
-    SW_RESTORE, WM_CLOSE,
+    FindWindowW, GetClassNameW, GetWindowThreadProcessId, IsWindow, MessageBoxW, PostMessageW,
+    SetForegroundWindow, ShowWindowAsync, MB_ICONERROR, MB_OK, SW_RESTORE, WM_CLOSE,
 };
 
 const DASHBOARD_TITLE: &str = "Usage Monitor";
 const DASHBOARD_MUTEX: &str = "Local\\ClaudeCodeUsageMonitorDashboard";
 const DASHBOARD_REQUEST_EVENT: &str = "Local\\ClaudeCodeUsageMonitorOpenDashboard";
+
+/// Display-only snapshot shared with the dashboard process. The monitor keeps
+/// the authoritative release descriptor and chooses the installation channel.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum UpdateStatus {
+    #[default]
+    Idle,
+    Checking,
+    Applying,
+    Available(String),
+}
+
+impl UpdateStatus {
+    pub(crate) fn is_busy(&self) -> bool {
+        matches!(self, Self::Checking | Self::Applying)
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct UpdateSnapshot {
+    owner: isize,
+    process_id: u32,
+    status: UpdateStatus,
+}
+
+fn update_status_path() -> std::path::PathBuf {
+    crate::app_settings::app_data_directory().join("update-status.json")
+}
+
+pub(crate) fn publish_update_status(owner: HWND, status: UpdateStatus) {
+    let snapshot = UpdateSnapshot {
+        owner: owner.0 as isize,
+        process_id: std::process::id(),
+        status,
+    };
+    if let Err(error) = crate::app_settings::write_json_atomic(&update_status_path(), &snapshot) {
+        crate::diagnose::log_error("dashboard update status save failed", error);
+    }
+}
+
+fn monitor_process_id(owner: isize) -> Option<u32> {
+    if owner == 0 {
+        return None;
+    }
+    let hwnd = HWND(owner as *mut _);
+    let mut class_name = [0u16; 64];
+    let mut process_id = 0;
+    unsafe {
+        if !IsWindow(Some(hwnd)).as_bool() {
+            return None;
+        }
+        let length = GetClassNameW(hwnd, &mut class_name).max(0) as usize;
+        if String::from_utf16_lossy(&class_name[..length]) != "ClaudeCodeUsageMonitor" {
+            return None;
+        }
+        GetWindowThreadProcessId(hwnd, Some(&mut process_id));
+    }
+    (process_id != 0).then_some(process_id)
+}
+
+fn read_live_update_snapshot() -> Option<UpdateSnapshot> {
+    let content = std::fs::read(update_status_path()).ok()?;
+    let snapshot: UpdateSnapshot = serde_json::from_slice(&content).ok()?;
+    // A saved HWND may have been destroyed or reused by a different process.
+    (monitor_process_id(snapshot.owner) == Some(snapshot.process_id)).then_some(snapshot)
+}
+
+/// Keep a live connection, or discover the monitor that replaced a dead owner.
+/// Owner zero denotes a standalone editor and must remain disconnected.
+pub(crate) fn resolve_monitor_owner(owner: isize) -> Option<isize> {
+    if owner == 0 {
+        return None;
+    }
+    if monitor_process_id(owner).is_some() {
+        return Some(owner);
+    }
+    read_live_update_snapshot().map(|snapshot| snapshot.owner)
+}
+
+pub(crate) fn read_update_status(owner: isize) -> UpdateStatus {
+    read_live_update_snapshot()
+        .filter(|snapshot| snapshot.owner == owner)
+        .map(|snapshot| snapshot.status)
+        .unwrap_or_default()
+}
 
 fn language() -> crate::localization::LanguageId {
     let settings = crate::app_settings::load_settings();
@@ -30,6 +115,7 @@ fn language() -> crate::localization::LanguageId {
 }
 
 pub fn show(owner: HWND) {
+    crate::diagnose::log("dashboard requested from monitor");
     if focus_existing() {
         return;
     }
@@ -166,7 +252,9 @@ pub fn focus_existing() -> bool {
         let Ok(hwnd) = FindWindowW(PCWSTR::null(), PCWSTR::from_raw(title.as_ptr())) else {
             return false;
         };
-        let _ = ShowWindow(hwnd, SW_RESTORE);
+        // The dashboard runs on another UI thread/process. Do not block the
+        // monitor (and its taskbar host) if that thread is busy or unresponsive.
+        let _ = ShowWindowAsync(hwnd, SW_RESTORE);
         let _ = SetForegroundWindow(hwnd);
         true
     }

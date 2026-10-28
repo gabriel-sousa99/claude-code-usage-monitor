@@ -1,0 +1,1540 @@
+# Changelog
+
+Notable changes to Claude Code Usage Monitor are documented here, newest first.
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), with
+changes grouped into Added, Changed, Fixed, and Removed where applicable.
+
+## [2.22.4] - 2026-10-25
+
+### Fixed
+
+- Guard surface recreation against a mirror list that changes during window creation, destroying the unused replacement instead of indexing past the list and aborting the window procedure.
+- Replace the widget hover popup outside its thread-local borrow when showing or refreshing it, so a reentrant native callback cannot panic while an earlier popup is destroyed.
+
+## [2.22.3] - 2026-10-25
+
+### Changed
+
+- Update the locked `zip` dependency from 9.0.4 to 9.0.5 for Theme Studio package import and export, retaining the existing Deflate feature configuration. ([#189](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/189))
+
+## [2.22.2] - 2026-10-25
+
+### Fixed
+
+- Round compact theme reset countdowns instead of truncating them. Use half-hour and half-day steps below 10 hours and 10 days, whole units above, and rounded minutes capped at 59 before switching to hours. Roll late-hour countdowns into `1d` and retain localized suffixes. ([#176](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/176))
+- Prevent overflow when rounding extremely large duration values, and cover rounding thresholds, unit transitions, and saturated template values with regression tests.
+
+## [2.22.1] - 2026-10-25
+
+### Fixed
+
+- Upgrade `ureq` to 3.5.0, which includes the [upstream connector feature fix](https://github.com/algesten/ureq/pull/1204), and enable `native-tls-no-default`. Remove `webpki-root-certs` from the resolved dependencies and its unused license allowance while retaining Windows certificate-store verification for polling and update downloads. ([#111](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/111))
+- Retain local TLS handshake regression checks for both production agents and add opt-in HTTPS checks for a valid certificate and rejection of self-signed, expired, and mismatched-host certificates. Document how to rerun them after TLS dependency changes.
+
+### Changed
+
+- Reduce the local Windows release executable from 7,659,008 bytes (v2.22.0) to 7,536,640 bytes, a decrease of 122,368 bytes (1.6%).
+
+## [2.22.0] - 2026-10-25
+
+### Added
+
+- Expose each named Antigravity quota group's reported 5h and weekly windows to themes through `antigravity.limits.<group_slug>_session` and `antigravity.limits.<group_slug>_weekly`, including the independent Gemini 4 Argon pool. Preserve the limits in cached usage. ([#172](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/172), [#173](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/173))
+
+### Fixed
+
+- Send the Antigravity CLI User-Agent needed for the daily summary to include Gemini 4 Argon. Keep the first successful summary authoritative and retain the existing endpoint order.
+- Keep Argon out of the main Gemini headline, including Argon-only summaries and groups identified by description or bucket metadata. Add regression coverage for pool isolation, per-group theme bindings, cache round trips, missing quota values, and reported reset times.
+
+## [2.21.3] - 2026-10-25
+
+### Fixed
+
+- Preserve the taskbar widget's pending hover timer across repeated mouse-move messages so redraws and repositioning cannot indefinitely delay its tooltip. Reuse active Windows tracking and request only missing hover or leave notifications. ([#159](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/159))
+- Add regression coverage for repeated mouse messages, tooltip dismissal, pointer re-entry, switching widget windows, and failed tracking queries.
+
+## [2.21.2] - 2026-10-25
+
+### Fixed
+
+- Prefer Cursor's current-period usage endpoint over the dashboard summary, which can report zero usage for a stale monthly period. Read bearer credentials from the existing local login or session-token environment setting, and retain the dashboard fallback when the internal endpoint is unavailable, disabled, or has no usable percentages. ([#186](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/186), [#190](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/190))
+- Derive Cursor's session label and reset from the reported billing bounds so a seven-day allowance displays `7d` in tray and hover summaries. Preserve the optional label in cached usage and expose it to themes as `{provider}.session.label`, with localized defaults for other providers.
+- Reject non-finite percentage strings, handle invalid timestamps without panicking, and preserve retryable dashboard errors when the optional internal endpoint rejects a login. Add regression coverage for fallback selection, idle versus missing usage, cache compatibility, and localized labels.
+
+## [2.21.1] - 2026-10-25
+
+### Fixed
+
+- Keep the monitor running when switching Windows accounts, changing display modes, or restarting Explorer. A hidden controller retains timers, tray callbacks, polling results, and the dashboard while missing widget, mirror, and desktop surfaces are recreated in place. Reserve process relaunches for an unresponsive UI thread. ([#175](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/175))
+- Use one taskbar-to-monitor rule across placement, drag docking, settings migration, and host sizing. Prefer the primary taskbar and overlapping secondary taskbars over off-screen stale hosts, while retaining Windows 10 auto-hide fallbacks. Temporarily move the main surface to the primary display and hide duplicates whose display is absent, retaining their saved placement for its return.
+- Keep surfaces hidden when their host is unavailable, and destroy surplus desktop windows when a theme removes them. Add geometry and isolated native-window regressions for host destruction, silent window loss, stable timers and state, and deferred shell callbacks.
+
+## [2.21.0] - 2026-10-25
+
+### Added
+
+- Show an Explorer-style hover popup on the default Classic widget in light and dark modes. Include the tray summary's selected providers, accounts, quota pools, and errors, with usage percentages to one decimal place and reset countdowns in days/hours or hours/minutes. Refresh the popup while visible and dismiss it when leaving, clicking, or dragging the widget.
+
+### Fixed
+
+- Update the transitive `clipboard-win` dependency from yanked 5.4.1 to 5.4.3 so the release dependency gate passes, retaining native text copy/paste through `arboard` and `egui-winit`.
+
+## [2.20.3] - 2026-10-22
+
+### Fixed
+
+- Pause requests for one minute after HTTP 429 responses without a usable `Retry-After` header, including repeated manual refreshes. Resume requests after the cooldown while keeping other accounts independent. ([#182](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/182))
+- Discover Claude desktop credentials and its bundled Claude Code executable under the migrated `%LOCALAPPDATA%\Claude-Data\claude_*` layout. Prefer migrated credential caches while retaining legacy roaming and Microsoft Store paths, and select the newest available bundled executable.
+- Isolate desktop discovery tests in temporary directories and cover migrated data discovery, bundled executable selection, rate-limit cooldowns, account independence, and recovery.
+
+## [2.20.2] - 2026-10-20
+
+### Fixed
+
+- Pin English in the shared Theme Studio test app so UI text assertions pass independently of the Windows display language. ([#179](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/179))
+- Update the transitive `webpki-root-certs` dependency from 1.0.9 to 1.0.10 to resolve RUSTSEC-2026-0383 found by the release dependency checks.
+
+## [2.20.1] - 2026-10-20
+
+### Fixed
+
+- Cap provider Retry-After cooldowns at 15 minutes and allow one manual recovery probe per minute after the first minute. Clear the cooldown on success and preserve its original deadline after failed probes, including responses with fresh Retry-After headers and network failures. Keep Claude Messages header probes exempt from cooldowns. ([#180](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/180))
+- Retry transient failures for enabled accounts after a partially successful poll, with exponential backoff that respects cooldowns. Keep successful readings visible and restore normal polling after recovery; permanent credential errors do not trigger these retries.
+- Add regression coverage for cooldown caps, manual probe recovery and throttling, unchanged deadlines after failures, and partial account retries.
+
+### Changed
+
+- Include sanitized HTTP request methods, hosts, paths, response statuses, and cooldown suppression in diagnostic logs without recording query strings or authorization headers.
+
+## [2.20.0] - 2026-10-19
+
+### Added
+
+- Track Antigravity's Gemini and Claude/GPT quota pools separately, with independent context-menu toggles and tray summaries. Compact Fluent Quad shows both pools' gauges and alternates their usage labels; existing theme bindings continue to show Gemini. ([#178](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/178))
+- Cache the pools under `antigravity_gemini` and `antigravity_external`, with the legacy `antigravity` key mirroring the external pool when reported. Show missing pools and windows as no limit data, and preserve existing settings when migrating to pool-level visibility.
+
+### Fixed
+
+- Preserve the empty named-pool safeguard when selecting quota summaries. Mark both pools stale after a failed poll, and keep crossfades synchronized after provider changes, startup, and sleep.
+- Keep pool choices independent when migrating settings, and clear pool visibility when the legacy whole-provider menu disables Antigravity. Add regression coverage for migration, cached failures, external reset polling, and animation timing.
+
+## [2.19.10] - 2026-10-19
+
+### Fixed
+
+- Read Antigravity's Gemini quota from the first authoritative quota summary, keeping Claude/GPT pools separate and preserving missing windows as no limit data. Use only Gemini model quotas when no endpoint provides a summary, send a versioned User-Agent, and try the sandbox endpoint last. ([#177](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/177))
+- Keep empty named pools from falling back to an unrelated unnamed group's quota. Add regression coverage for pool selection, endpoint fallback, empty summaries, and unchanged reported reset times.
+- Cache absent usage windows with a null percentage so external readers can distinguish unavailable data from zero usage, while continuing to read older caches.
+
+## [2.19.9] - 2026-10-18
+
+### Fixed
+
+- Reconnect an open Settings or Theme Studio dashboard after the monitor recovers from a UI hang, preserving unsaved edits and undo history. Validate the replacement monitor's window class and process ID, and resolve command targets when sending settings, refresh, diagnostics, and update requests.
+- Add regression coverage for reconnection, preserved editor state, commands sent before the next dashboard refresh, stale monitor records, and standalone editors.
+
+## [2.19.8] - 2026-10-17
+
+### Changed
+
+- Update `winresource` from 0.1.31 to 0.1.34 for embedding the executable's Windows icon, manifest, and version metadata. ([#171](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/171))
+
+## [2.19.7] - 2026-10-17
+
+### Changed
+
+- Update `serde_json` from 1.0.151 to 1.0.154 for JSON parsing and serialization at build time and runtime. ([#170](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/170))
+
+## [2.19.6] - 2026-10-17
+
+### Changed
+
+- Update `lucide-icons` from 1.52.0 to 1.56.0 for the dashboard and Theme Studio icons and bundled icon font. ([#169](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/169))
+
+### Fixed
+
+- Update `zip` from 8.6.0 to 9.0.4 to resolve extraction advisories RUSTSEC-2026-0367, RUSTSEC-2026-0368, and RUSTSEC-2026-0369 found by the release dependency checks. Adapt theme package filename handling to the updated API and cover compressed export/import compatibility.
+
+## [2.19.5] - 2026-10-14
+
+### Fixed
+
+- Relaunch the widget when its UI thread stops answering for at least 30 seconds and ten consecutive probes, even while it holds application state. Back off repeated hang recoveries up to eight minutes, skip probes while a debugger is attached, and prevent concurrent watchdogs from spawning duplicate replacements. ([#168](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/168))
+- Preserve diagnostic recording and append existing logs across watchdog relaunches. Let recovery proceed when a frozen thread holds the diagnostic log mutex, and reset the hang deadline after long probe gaps such as system sleep.
+- Add regression coverage for responsive, frozen, and destroyed windows, recovery timing, sleep gaps, repeated-hang backoff, and log mutex contention.
+
+## [2.19.4] - 2026-10-13
+
+### Fixed
+
+- Cache the theme list in Settings and Theme Studio instead of reading and validating theme files and reinstalling built-in themes on every frame, reducing dashboard scrolling stutter. Refresh after saves, imports, and deletions, and check file metadata once per second for external changes, including in-place edits. ([#167](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/167))
+- Add regression coverage for cache reuse, external changes, immediate invalidation, theme ordering, invalid files, library creation and removal, and active themes outside the managed library.
+
+## [2.19.3] - 2026-10-13
+
+### Fixed
+
+- Resolve saved taskbar and floating placements by the monitor's GDI device name before its enumeration index, keeping the selected display when monitor order or the primary display changes. Preserve the saved choice while a named display is absent, and retain index-based behavior for older settings. ([#166](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/166))
+- Add regression coverage for monitor reordering, missing displays, settings compatibility, and device-based placement for both taskbar and floating hosts.
+
+## [2.19.2] - 2026-10-13
+
+### Fixed
+
+- Keep locked widgets docked on Windows 10 when the built-in layout slightly overhangs the taskbar. Skip collision decisions during auto-hide slides and reveal strips, reposition stale dock offsets before falling back to floating, and restore locked widgets when at least half their layout fits again. Mostly hidden layouts retain the visibility fallback. Include taskbar and widget bounds in ejection diagnostics. ([#165](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/165))
+- Keep floating widgets visible over maximized windows with an auto-hide taskbar, while continuing to hide them over fullscreen windows.
+- Add regression coverage for Windows 10 taskbar geometry at fractional DPI, both horizontal built-in themes and provider counts, hidden taskbars on all four edges, and stale-position recovery.
+
+## [2.19.1] - 2026-10-11
+
+### Changed
+
+- Update `lucide-icons` from 1.48.0 to 1.52.0 for the dashboard and Theme Studio icons and bundled icon font. ([#162](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/162))
+
+## [2.19.0] - 2026-10-09
+
+### Added
+
+- Show a conditional Fable weekly quota column in Classic and Compact Fluent Quad, with light and dark appearances and percentages that follow the usage direction setting. Expand the widget only when the quota is available. ([#158](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/158))
+
+### Fixed
+
+- Hide the Fable column and remove its reserved width when Claude is disabled, even while cached quota data remains. Add regression coverage for provider visibility, column placement, and usage direction in both horizontal themes.
+
+## [2.18.1] - 2026-10-05
+
+### Changed
+
+- Update `lucide-icons` from 1.47.0 to 1.48.0 for the dashboard and Theme Studio icons and bundled icon font. ([#152](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/152))
+
+## [2.18.0] - 2026-10-05
+
+### Added
+
+- Add **Classic Vertical**, a separate copy of the default theme for left and right-docked taskbars. Stack enabled providers above the notification area, fit the taskbar width at the selected display's DPI, retain themed tray icons, and show monthly allowances and countdown percentages. Select it from the theme gallery. ([#155](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/155))
+- Add a Windows 10 VM scenario for real right/left taskbar docking, default-theme fallback, live light/dark and orientation changes, automatic redocking, restart persistence, single-provider sizing, and widget/taskbar/desktop screenshots with a separate sample-usage fixture.
+
+### Fixed
+
+- Anchor legacy widgets along the taskbar's long axis, using the notification area's top edge on vertical taskbars. Clamp saved offsets along that axis and use the same screen geometry for embedded and fallback windows, including secondary taskbars without a tray.
+- Leave clearance above Windows 10's News and interests button in Classic Vertical so the default placement avoids watchdog ejection beside the taskbar.
+- Keep incompatible themed widgets visible beside the taskbar instead of clipping them inside the shell parent. Preserve the selected theme and saved placement, redock automatically when they fit again, and allow visibility fallback even when taskbar lock is enabled. Keep auto-hide reveal strips from triggering fallback.
+- Keep Classic Vertical's provider headings readable in both light and dark appearances, with contrast coverage for each heading on taskbars and floating cards.
+- Clear temporary visibility fallback when selecting another theme or changing its placement, so desktop, tray and intentional floating layouts take effect immediately without carrying over the previous widget's position.
+
+## [2.17.1] - 2026-10-05
+
+### Fixed
+
+- Read Codex monthly individual spend limits when legacy rate-limit windows are absent. Show the monthly allowance in the long-window gauge with a 30d label while preserving any legacy weekly allowance and exposing monthly usage separately to themes. ([#153](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/153))
+- Add regression coverage for missing and null spend limits, incomplete responses, zero usage without a reset time, and monthly fallback alongside a legacy session window.
+
+## [2.17.0] - 2026-10-02
+
+### Added
+
+- Add GitHub Copilot usage monitoring with automatic Copilot CLI and GitHub CLI login detection, environment-token overrides, monthly premium-request usage, and optional metered chat and completion theme bindings. Include provider settings, localized authentication guidance, a brand mark, and pink gauges in both built-in themes. ([#151](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/151))
+
+### Fixed
+
+- Show Copilot loading badges in both built-in themes and honor countdown mode in Compact Fluent Quad tray percentages, keeping usage warning colors based on the amount spent. Cover both built-in Copilot tray badges at digit boundaries in either usage direction.
+
+## [2.16.0] - 2026-09-30
+
+### Added
+
+- Add an optional, persistent **Lock in taskbar** setting to Dashboard Settings and the Classic tray menu, with Theme Studio menu-action support and locale labels. Keep locked widgets docked through taskbar collisions, allow dragging along the bar, and snap outside drops back to their saved dock placement. ([#150](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/150))
+- Add Windows VM scenarios that reproduce watchdog ejection using a measured one-pixel overlap with an actual application task button, then check lock toggles, outside drops, dragging, restart persistence, and live resolution/DPI changes.
+
+### Fixed
+
+- Re-dock an auto-ejected widget immediately when enabling the taskbar lock from the tray menu. Preserve the ejection state until the re-docking helper consumes it and release the application state lock before Win32 re-parenting.
+- Apply the lock only to the configured Taskbar host, preserving intentional Floating, Desktop, and Tray icon placement. Keep newer menu lock selections when an open dashboard saves unrelated settings, while preserving deliberate dashboard toggles.
+- Run the VM collision fixture in its own process with a continuous message loop and bounded teardown. Handle monitor processes that exit during cleanup.
+- Validate the actual display mode when Windows refreshes its Settings automation provider during a resolution or DPI selection.
+
+## [2.15.22] - 2026-09-29
+
+### Fixed
+
+- Show Grok usage as 0% after a billing reset when the response omits zero spending and includes a usable period end. Continue rejecting incomplete or malformed periods when usage is absent, and preserve explicit usage values. Add regression coverage for fresh weekly and monthly periods, invalid timestamps, and explicit usage without a reset time. ([#149](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/149))
+- Use violet for the Grok pool usage value in both light and dark variants of Compact Fluent Quad, matching its progress bar.
+
+## [2.15.21] - 2026-09-29
+
+### Added
+
+- Add ten Windows VM scenarios for clean profiles, Explorer recovery, update failures, resilient settings, sign-in startup, live display and system-theme changes, network/auth errors, locale/theme galleries, and a separate nightly soak. Add allowlisted host actions for reboot with one-time sign-in, network disconnection, outbound connection auditing, VM pause/resume, and guest clock changes; retain screenshots, resource samples, and per-subcase failures.
+- Define Windows VM tests in an ordered catalogue with separate case scripts, shared desktop helpers, discoverable test IDs, selectable suites, per-test requirements and timeouts, and an authoring guide. Preserve the existing six flows and the `-Flows` alias; default to a two-guest baseline smoke suite.
+- Report all planned VM scenarios in JSON and Markdown, including skipped and unexecuted cases, durations, failed assertions, infrastructure errors, and evidence links. Validate catalogue entries and required inputs before touching VMs.
+
+### Fixed
+
+- Collect VM evidence per file with bounded retries so a locked transcript does not prevent recovery of other results, logs, and screenshots. Preserve collection errors separately from the original test failure.
+- Check dashboard keyboard focus, use native keyboard injection instead of blocking `SendWait`, separate selection/edit/commit input, and wait for persisted settings and clipboard results in the WARP desktop case.
+- Correct the user guide's default smoke coverage to include portable launch and clean-profile first launch on both guests: four scenarios.
+
+### Removed
+
+- Replace checked-in historical VM result snapshots with per-run JSON and Markdown reports in the ignored evidence directory.
+
+## [2.15.20] - 2026-09-26
+
+### Fixed
+
+- Check only the installation's update source: standalone executables check GitHub releases, while WinGet installs check published WinGet versions independently. Offer the newest stable WinGet version only when it is newer than the running version, avoiding unavailable updates while WinGet publication trails GitHub. Preserve each source's errors without falling back to the other channel. ([#145](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/145), [#144](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/144))
+- Keep WinGet checks noninteractive with a timeout, reject unrecognizable output, and use the same WinGet source for checking and upgrading. Add regression coverage for source isolation, failures, localized output, and version precedence.
+
+## [2.15.19] - 2026-09-25
+
+### Fixed
+
+- Prevent background Claude token refreshes from saving sessions on Claude Code 2.0.63 and later by using `--no-session-persistence`. Check the CLI version on Windows and inside the selected WSL distribution, and preserve the existing `claude -p .` behavior for older versions. Previously saved sessions are left untouched. ([#143](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/143))
+- Capture CLI versions with bounded waits, skip refresh when the version cannot be determined, and log compatibility and refresh failures. Preserve WSL command arguments with `--exec` and reap timed-out refresh processes. Add regression coverage for version parsing, legacy and modern command arguments, failed probes, and timeouts.
+
+## [2.15.18] - 2026-09-25
+
+### Fixed
+
+- Specify an exact version for the vendored `egui-directx11` dependency so the release passes the dependency policy's wildcard ban. The vendored renderer and runtime behavior are unchanged.
+
+### Added
+
+- Add `tests/Test-Dependencies.ps1` to validate locked Cargo metadata and run the same `cargo audit` and `cargo deny` checks as release CI before local builds. Stop on failures, handle redirected scanner output in Windows PowerShell, and restore the caller's working directory. Document scanner setup, lockfile preparation, and the required pre-build checks.
+
+## [2.15.17] - 2026-09-25
+
+### Fixed
+
+- Render equal whole-pixel segments and gaps at fractional display scales, keeping the drawn bar within its bounds and anchored to its fill direction. Measure partial fills and rounded ends against the drawn extent. ([#142](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/142), [#140](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/140))
+- Preserve the full bar extent when segment gaps round or clamp to zero. Add regression coverage for all four fill directions, partial fills, rounded edges, fractional scales, and extreme layout inputs.
+
+## [2.15.16] - 2026-09-25
+
+### Fixed
+
+- Keep OpenGL as the primary dashboard renderer and fall back to native Direct3D 11 WARP when OpenGL context, configuration, or painter initialization fails. Use the software renderer supplied with Windows 10 and Windows 11, without an additional graphics runtime. Preserve both errors if fallback also fails. ([#141](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/141))
+- Share dashboard UI and settings between renderers, preserve window ownership and single-instance behavior during fallback, and avoid continuous idle redraws. Add renderer regression tests and Windows 10/11 Hyper-V coverage for automatic fallback, forced WARP, rendering, input, clipboard, resizing, and persisted settings.
+
+### Removed
+
+- Replace the wgpu fallback and its backend/shader-translation dependencies with a small native D3D11 host and vendored painter using precompiled shaders. The tested release executable shrank from 10.24 MB to 7.44 MB, approximately 32 KB above the OpenGL-only build.
+
+## [2.15.15] - 2026-09-24
+
+### Changed
+
+- Verify downloaded updates with the Windows CNG SHA-256 provider and key Retry-After cooldowns with a randomly keyed in-memory hash, replacing the `sha2` crate. Add a multi-read digest regression test.
+- Resolve the profile, roaming, and local application data folders through a small Windows known-folder helper that uses the same shell API as before, replacing the `dirs` crate.
+- Embed Windows icon, manifest, and version resources with the maintained `winresource` fork instead of `winres`, removing the duplicate `toml` 0.5 build dependency. Embedded resources are unchanged.
+
+### Removed
+
+- Removed the unused `Win32_UI_Controls` Windows API feature and the `option-ext` license exception. The release executable is 8,704 bytes smaller and the lockfile has 16 fewer packages.
+
+## [2.15.14] - 2026-09-24
+
+### Fixed
+
+- Refresh expired Antigravity OAuth access tokens using metadata from the installed client and retry rejected access once, without rewriting provider credentials. Preserve retryable network, rate-limit, server, and malformed-response failures instead of pausing polling as a login error. Add authentication regression tests. ([#139](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/139))
+
+## [2.15.13] - 2026-09-24
+
+### Changed
+
+- Expand tray-snapping regression coverage across 100%, 125%, 150%, 200%, and 300% display scaling, checking the existing 67% attach and 45% detach overlap thresholds. Document why overlap ratios keep snapping DPI independent. ([#138](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/138))
+
+## [2.15.12] - 2026-09-24
+
+### Fixed
+
+- Reuse derived Builder catalogue entries while refreshing live clock values, and rebuild for changed usage, accounts, limits, layout, language, or syntax. Avoid duplicate unchanged-draft validation and revalidate changed drafts before Apply, with cache and validation regression tests. ([#137](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/137))
+
+## [2.15.11] - 2026-09-24
+
+### Fixed
+
+- Apply tray-avoidance clamping only to runtime taskbar placements created by dragging, preserving exact authored theme positions. Keep the runtime flag out of saved themes and cover horizontal, vertical, floating, and serialized placements. ([#136](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/136))
+
+## [2.15.10] - 2026-09-24
+
+### Fixed
+
+- Cap stored Retry-After cooldowns at 24 hours for numeric and HTTP-date headers, including overflowing values, so malformed server delays cannot block accounts indefinitely. Cover boundary values, bounded timers, and request resumption after expiry. ([#135](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/135))
+
+## [2.15.9] - 2026-09-24
+
+### Fixed
+
+- Retain Builder search focus after Enter insertion while preserving the editor caret. Prevent Enter with no matching entries from causing a delayed insertion when results return, with regression coverage for repeated insertion, search typing, and empty results. ([#134](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/134))
+
+## [2.15.8] - 2026-09-24
+
+### Fixed
+
+- Keep Claude Messages usage probes reading fresh utilization and reset headers during Retry-After cooldowns, without recording probe cooldowns or bypassing ordinary request protection. Add middleware and repeated HTTP-probe regression tests. ([#133](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/133))
+
+## [2.15.7] - 2026-09-24
+
+### Changed
+
+- Update sha2 to 0.11.0 and its supporting crates for release-download verification and credential-isolated Retry-After request keys. ([#132](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/132))
+
+## [2.15.6] - 2026-09-24
+
+### Changed
+
+- Update Lucide icons to 1.47.0 and regenerate the compact bundled icon font from the icons used by the application. ([#131](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/131))
+
+## [2.15.5] - 2026-09-24
+
+### Changed
+
+- Update dirs to 7.0.0 while preserving the home, roaming configuration, and local data directory lookups used for credentials and updates. ([#130](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/130))
+
+## [2.15.4] - 2026-09-24
+
+### Changed
+
+- Update the build-time TOML parser to 1.1.6+spec-1.1.0 for locale parsing and validation. ([#129](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/129))
+
+## [2.15.3] - 2026-09-24
+
+### Changed
+
+- Update ureq to 3.4.2 and ureq-proto to 0.6.4, retaining Windows certificate-store verification, HTTPS restrictions, timeouts, and Retry-After handling. ([#128](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/128))
+
+## [2.15.2] - 2026-09-24
+
+### Fixed
+
+- Update the egui/eframe family and default fonts to 0.36.2, refreshing the vendored egui-winit crate while preserving native text clipboard support and excluding image clipboard codecs. ([#127](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/127))
+
+## [2.15.1] - 2026-09-24
+
+### Changed
+
+- Update checkout to v7, GitHub release publishing to v3, and .NET setup to v6 while retaining the existing release and dependency-security workflow behavior. ([#126](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/126))
+
+## [2.15.0] - 2026-09-24
+
+### Added
+
+- Unified Theme Studio Builder for expressions, text templates, mouse actions, and context-menu actions, with a shared catalogue, search, category and provider filters, provider marks, and in-use indicators. Values and functions can be inserted at the cursor in action expressions. ([#122](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/122))
+
+### Changed
+
+- Updated Builder labels and entry points across all supported locales.
+- Documented SemVer release rules in `AGENTS.md`: minor releases reset the patch number to zero, and major releases reset both minor and patch numbers. This feature release advances from 2.14.64 to 2.15.0.
+
+### Fixed
+
+- Restore the editor cursor after a Builder insertion so subsequent typing follows the inserted value, with regression coverage.
+
+## [2.14.64] - 2026-09-24
+
+### Fixed
+
+- Keep widgets dropped into free taskbar space anchored independently of tray icon changes, with temporary clamping and restoration when the tray expands. Preserve tray-relative snapping and legacy placement. Exclude notification controls from app-button collision checks to prevent false undocking. ([#125](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/125))
+- Keep partially overlapping app buttons eligible for collision detection, and restrict the taskbar clamp to docked surfaces so floating themes retain their placement.
+
+### Added
+
+- Placement and collision regression tests, plus a Windows VM tray scenario that records real notification-area changes, drag/drop placement, window parenting and screenshots.
+- Ignore local development builds and scratch folders.
+
+## [2.14.63] - 2026-09-24
+
+### Added
+
+- Disposable Windows 10 and Windows 11 Hyper-V test harness with VM provisioning, portable launch and update-helper scenarios, pinned public WinGet install and upgrade scenarios, taskbar variants, and evidence collection. Documented setup, checkpoints, execution, and coverage limitations. ([#124](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/124))
+- Local harness checks for configuration, scenario planning, checkpoint safeguards, PowerShell parsing, and desktop bridge compilation.
+
+### Fixed
+
+- Require preserved desktop memory before restoring lab checkpoints, and explicitly set and verify auto-hide state for every taskbar scenario.
+
+## [2.14.62] - 2026-09-24
+
+### Added
+
+- Weekly Dependabot updates for Cargo dependencies and GitHub Actions, with coupled egui crates grouped together. Added daily, pull request, and branch dependency checks using pinned cargo-audit and cargo-deny versions. ([#119](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/119))
+- Dependency security policy covering advisories, licenses, dependency sources, local checks, and vendored dependency maintenance, with a documented temporary exception for the build-time unmaintained `ttf-parser` dependency.
+
+### Changed
+
+- Gate release builds and publishing on dependency security checks and build releases with the committed lockfile.
+
+## [2.14.61] - 2026-09-24
+
+### Fixed
+
+- Statically link the C runtime in Windows MSVC builds, including release CI, so the executable no longer requires a separate Microsoft Visual C++ Redistributable installation. Documented the build configuration and continued use of built-in Windows system libraries. ([#123](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/123))
+
+## [2.14.60] - 2026-09-24
+
+### Added
+
+- Contribution guidelines, a code of conduct, a private security reporting policy, and GitHub issue and pull request templates. ([#121](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/121))
+
+### Changed
+
+- Documented safe diagnostic sharing and linked community and security guidance from the README. Issue templates direct suspected vulnerabilities to private reporting.
+
+## [2.14.59] - 2026-09-24
+
+### Changed
+
+- Updated the MIT license copyright notice to Code Zeno Pty Ltd and the year to 2026, matching the executable metadata. ([#120](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/120))
+
+## [2.14.58] - 2026-09-23
+
+### Changed
+
+- Pinned local development and release CI to Rust 1.95.0, including rustfmt and Clippy for local development. Documented the toolchain selection and the files to update when upgrading Rust. ([#118](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/118))
+
+## [2.14.57] - 2026-09-23
+
+### Fixed
+
+- Respect `Retry-After` seconds and HTTP dates on rate-limit and server-error responses across provider usage requests. Matching requests stay blocked during server cooldowns, including manual refreshes and partial polls, while other accounts can continue refreshing. Failed polls extend their retry timer to honor the server delay. ([#117](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/117))
+
+### Added
+
+- Regression coverage for cooldown parsing, account isolation, expiry, invalid and oversized delays, retry timer limits, and preservation of response headers before HTTP error handling.
+
+## [2.14.56] - 2026-09-23
+
+### Fixed
+
+- Scoped the monitor's single-instance mutex to the current Windows session so separate desktop and RDP sessions can run independently, while preserving duplicate-instance detection and Explorer restart handoff within each session. ([#116](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/116))
+
+## [2.14.55] - 2026-09-23
+
+### Fixed
+
+- Removed retired Claude 3 Haiku from Messages API usage-header probes, avoiding a guaranteed-failing request. Probes now use the low-cost `claude-haiku-4-5` alias with the existing one-token output limit. ([#115](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/115))
+
+## [2.14.54] - 2026-09-23
+
+### Fixed
+
+- Require a directory boundary when detecting WinGet installations so portable executables in sibling folders such as `Packages-old` use the portable updater. ([#114](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/114))
+
+### Added
+
+- Regression coverage for WinGet installation paths, upgrade command quoting and restart conditions, and version parsing and numeric precedence under the updater's current SemVer rules.
+
+## [2.14.53] - 2026-09-23
+
+### Fixed
+
+- Verify portable updates against the GitHub release asset's SHA-256 digest and size, limit downloads to 100 MiB, remove failed partial downloads, and recheck and lock the staged file before replacing the installed executable. ([#113](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/113))
+- Select only the exact executable from the configured repository over HTTPS, reject ambiguous or invalid release metadata, and follow stable SemVer precedence without treating build metadata as a newer version.
+
+### Added
+
+- Updater regression tests for release selection, integrity checks, download failures, helper arguments, and Windows file locking, run before release builds. Documented the updater's verification requirements and trust boundary.
+
+## [2.14.52] - 2026-09-23
+
+### Fixed
+
+- Automatically append Rust panic messages, source locations, and thread details to the diagnostic log even when recording is disabled, using a separate file handle to avoid the logger's mutex. Documented crash-log collection and preservation before starting a new diagnostic session. ([#112](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/112))
+
+## [2.14.51] - 2026-09-23
+
+### Fixed
+
+- Strengthened the polling HTTPS regression test and added updater coverage using a shared local server that checks TLS handshake initiation. The previous closed-port test could pass without exercising the TLS connector. Documented why the `native-tls` feature is required for the configured Windows certificate verification.
+
+## [2.14.50] - 2026-09-23
+
+### Changed
+
+- Switched theme package ZIP compression to the zlib-rs-only Deflate feature, removing the unused Zopfli encoder dependency while retaining Deflate import and export support.
+
+## [2.14.49] - 2026-09-23
+
+### Added
+
+- Brand marks for every provider on the Settings page, shown beside each provider's name in the Providers section.
+
+### Changed
+
+- Replaced the single-glyph GitHub font with `brand-marks.ttf`, a seven-glyph companion font carrying GitHub and provider logos in the Lucide family. The embedded font includes glyph mappings, geometry guidance, and artwork attribution alongside its declaration, with regression tests for distinct codepoints and visible glyphs.
+
+## [2.14.48] - 2026-09-23
+
+### Removed
+
+- Removed BMP image imports and image clipboard support while preserving native text copy, cut, and paste. A documented local `egui-winit` patch disables `arboard`'s image dependencies. The image picker and supported-format message now list PNG, JPEG, GIF, and WebP.
+
+## [2.14.47] - 2026-09-23
+
+### Changed
+
+- Minified the three bundled theme JSON files at build time, reducing embedded theme data by 95,499 bytes (41.9%) while keeping the source files readable for editing. Theme source changes automatically regenerate the bundled copies.
+
+## [2.14.46] - 2026-09-23
+
+### Fixed
+
+- Matched the automatic floating card's background and border to the Windows system theme, restoring contrast in light mode for floating and automatically undocked widgets. ([#110](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/110))
+
+## [2.14.45] - 2026-09-23
+
+### Added
+
+- Grok Build usage monitoring from the signed-in CLI session in `%USERPROFILE%\.grok\auth.json`, with a `GROK_HOME` override, provider controls, and translated sign-in guidance. ([#109](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/109))
+- Grok's billing-period pool on the long-window row in both built-in themes, violet gauges and tray icons, on-demand spending once used, and per-product usage bindings under `grok.limits.<product>` in Theme Studio.
+
+### Fixed
+
+- Limited Grok billing credential selection to xAI sign-in scopes, excluding corporate identity-provider tokens and stored API keys.
+- Bounded Grok CLI version detection, supported Windows command and PowerShell shims, and ignored output from failed commands.
+- Rejected overflowing Grok reset timestamps without interrupting background polling.
+- Accepted bare and wrapped numeric strings in Grok credit balances, including proto3 int64 values, while rejecting invalid or non-finite amounts.
+- Retried failed Grok CLI version and path detection on later polls instead of permanently caching fallback values.
+
+## [2.13.44] - 2026-09-22
+
+### Changed
+
+- Rendered the dashboard GitHub link from an icon font glyph instead of an embedded SVG, so it follows the surrounding menu text colour. The mark is a 1 KB single-glyph TrueType font that joins the Lucide icon family as a fallback.
+
+### Removed
+
+- Dropped the `egui_extras` dependency and its `svg` feature, which existed solely to draw the GitHub logo. This removes the resvg, usvg, tiny-skia, and XML/CSS parsing stack and reduces the release executable by roughly 549 KB (7.3%).
+
+## [2.13.43] - 2026-09-21
+
+### Added
+
+- Exposed Claude usage API quotas and legacy optional limits to custom themes, including named model bindings, active scoped limits, reset timers, account-specific data, and discovered values under Claude Code in the Theme Studio text and expression editors. Built-in themes and headline values remain unchanged. ([#56](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/56), [#61](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/61))
+
+### Fixed
+
+- Explained login, network, HTTP, and response-format failures in tray tooltips and account status. Logged malformed Claude usage responses without silently invoking the Messages API fallback, and updated sign-in guidance for desktop and CLI users. ([#72](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/72))
+
+## [2.12.42] - 2026-09-21
+
+### Fixed
+
+- Published usage as each provider or account responds, allowing faster providers to appear while others refresh credentials or wait on network requests. Pending readings are preserved, and the dashboard receives partial updates too.
+- Moved paused credential checks onto the poll worker so local credential reads and WSL probes cannot block the widget's window procedure. Manual refreshes queued during a check are preserved.
+- Isolated test settings, usage caches, themes, and context menus in temporary directories per test thread, preventing tests from changing the real application data or interfering with each other.
+- Restored the dashboard GitHub link, which stopped opening after the eframe update in `2.8.16`, by using the Windows browser opener shared with widget links.
+- Detected Claude desktop credentials from Microsoft Store installations and preferred tokens carrying both usage-related scopes. Preserved newer token-cache support, credential-change watching, and explicit account selection.
+
+## [2.12.41] - 2026-09-21
+
+### Fixed
+
+- Reduced widget jitter during tray icon updates and shell animations by waiting 80 ms after the last tray location event before repositioning. ([#107](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/107))
+- Routed watchdog tray geometry changes through the same delay so they cannot trigger an immediate reposition and cancel a pending tray update.
+
+## [2.12.40] - 2026-09-21
+
+### Fixed
+
+- Preserved the taskbar's logical host dimensions when widgets are dragged or automatically undocked, preventing custom themes using `host.height` from expanding to the full screen height. Child layout uses the same dimensions, with floating-card padding kept outside the content.
+- Saved floating host dimensions per theme and root across restarts and repeated drags, and used the destination monitor's DPI when sizing a dropped widget. Re-docking adopts the destination taskbar's dimensions; themes authored as floating retain monitor-based sizing.
+- Retained the last valid taskbar geometry during auto-hide or temporary taskbar removal, with a compact fallback when no taskbar dimensions are available for undocking.
+- Fixed missed automatic undocking on Windows 11 by measuring actual taskbar controls instead of legacy container bounds. Collision and return checks account for widgets on either side of centred buttons, separate button groups and rows, vertical taskbars, monitor offsets, and DPI scaling.
+- Kept taskbar accessibility queries off the UI and Explorer watchdog threads, ignored unavailable or stale measurements, and rechecked queued transitions before moving the widget. Automatic return preserves the original position and waits for clearance from app buttons on both sides.
+- Allowed docking into measured gaps on either side of taskbar buttons and corrected saved offsets for gaps left of centred buttons, preventing the widget from jumping toward the tray after a drop.
+
+## [2.12.39] - 2026-09-19
+
+### Added
+
+- Dashboard version button with a refresh icon to check for updates, changing to a download icon and version tooltip when an update is available. Uses the existing update prompts and portable EXE or WinGet installation flow.
+
+### Changed
+
+- Synchronized dashboard update status with the running monitor, disabled the version button while updates are busy, and resolved unsaved theme edits before starting an update action.
+
+### Fixed
+
+- Prevented repeated WinGet update launches while an update is starting.
+
+## [2.12.38] - 2026-09-19
+
+### Added
+
+- Project changelog covering version history from `1.0.0` onward, with GitHub comparison links.
+- [User guide](USER_GUIDE.md) covering theme duplication and customisation, saving and Live apply, provider selection, refresh settings, and usage direction.
+
+### Changed
+
+- Linked the user guide and changelog from the README.
+
+## [2.12.37] - 2026-09-19
+
+### Fixed
+
+- Prevented widget flicker during routine rendering and theme updates by preserving layered DWM surfaces.
+- Restored correct taskbar visibility after re-docking by rebinding layered surfaces only after successful parent changes.
+
+## [2.12.36] - 2026-09-19
+
+### Changed
+
+- Made diagnostics logging optional, stopping recording and closing log files when disabled.
+- Simplified the Diagnostics page with settings-style sections, icon controls, and a follow toggle; moved the app version beside the GitHub link.
+- Preserved raw log output while displaying local dates and times in the viewer.
+
+## [2.12.35] - 2026-09-18
+
+### Fixed
+
+- Accepted OpenCode Go console-session cookies without incorrectly prefixing them with `auth=`; preserved full Cookie headers and legacy raw tokens. Updated setup instructions. ([#102](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/102))
+
+## [2.12.34] - 2026-09-18
+
+### Added
+
+- Live Diagnostics page with app version, refresh tracing, and copy/pause controls.
+
+### Fixed
+
+- Preserved Claude usage and HTTP failure status across dashboard reloads by correcting cache validation.
+- Reported refresh requests that could not reach the running monitor.
+
+## [2.12.33] - 2026-09-18
+
+### Fixed
+
+- Displayed Claude HTTP failures in account status and cleared them after successful polling.
+- Preserved cached status, stale usage, and authentication recovery, including when accounts are renamed.
+
+## [2.12.32] - 2026-09-18
+
+### Fixed
+
+- Resolved taskbars to the correct monitors, kept restored floating widgets on screen, and checked the full saved docking rectangle before re-docking.
+- Corrected vertical docking geometry and placement overrides for themes with custom anchors and offsets.
+- Synchronized fullscreen visibility checks and isolated the primary widget's window state from mirrored widgets.
+
+## [2.12.31] - 2026-09-18
+
+### Fixed
+
+- Restored Claude desktop usage with support for the desktop app's `oauth:tokenCacheV2` format. ([#104](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/104))
+- Allowed default-path Claude profiles to fall back to desktop credentials and detect desktop login or token rotation, while keeping custom `CLAUDE_CONFIG_DIR` accounts isolated.
+
+## [2.12.30] - 2026-09-18
+
+### Added
+
+- Free widget dragging, magnetic docking, and saved placement across monitors.
+- Automatic floating when taskbar space runs out and re-docking when space returns, with padded floating cards.
+
+### Fixed
+
+- Repositioned the docked widget as notification icons appear or disappear.
+- Corrected first-drag flashes, secondary-monitor and high-DPI placement, drag capture transitions, and false collision loops.
+- Prevented left-edge clipping in automatically floating cards while preserving compact docked dimensions.
+
+## [2.11.29] - 2026-09-17
+
+### Fixed
+
+- Restored OpenCode Go polling after its console migration by using the console JSON status API with workspace context. ([#102](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/102))
+- Calculated rolling, weekly, and monthly usage from the new meters while preserving absolute reset times; updated provider setup instructions.
+
+## [2.11.28] - 2026-09-16
+
+### Added
+
+- Multiple named Claude Code and Codex accounts with independent usage, credentials, status, and default-account selection.
+- Account-specific theme bindings, custom credential paths, and `CLAUDE_CONFIG_DIR` support. ([#75](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/75))
+- Custom refresh intervals in minutes, synchronized between Settings and context menus.
+
+### Fixed
+
+- Preserved unique account IDs after deletion and validated account theme bindings without requiring live data.
+- Restored authentication recovery and notifications independently for each account.
+
+## [2.10.27] - 2026-09-15
+
+### Added
+
+- Compact Fluent Quad built-in theme, with support for the selected usage direction.
+
+## [2.10.26] - 2026-09-13
+
+### Fixed
+
+- Prevented taskbar-position queries from hanging when Explorer stops responding. ([#98](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/98))
+- Improved taskbar recovery after Explorer restarts by checking surviving window parents, re-docking, and repainting without entering a relaunch loop.
+
+## [2.10.25] - 2026-09-12
+
+### Added
+
+- Conditional context-menu `Render` expressions, Theme Studio controls, and live preview filtering. ([#96](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/96))
+
+### Fixed
+
+- Tracked whether providers actually report each usage window, even when usage is zero or reset times are absent, including cached readings.
+- Preserved idle Codex session windows instead of replacing them with weekly usage.
+- Made monthly theme variables and labels validate without live provider data.
+
+## [2.10.24] - 2026-09-11
+
+### Fixed
+
+- Deferred tray callbacks and restored the dashboard asynchronously to prevent locking problems during tray interactions. ([#94](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/94))
+
+## [2.10.23] - 2026-09-10
+
+### Added
+
+- **Settings > Display > Usage direction** option to show either used or remaining allowance, with Used as the default. ([#93](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/93))
+- Explicit `.display` theme bindings and Theme Studio helpers; updated Classic bars, summaries, and tray badges to follow the setting.
+
+### Fixed
+
+- Kept existing percentage bindings, usage summaries, and warning thresholds backward compatible; custom themes opt in to the new display direction.
+- Kept tray badge sizing and severity colors correct when counting down remaining usage.
+
+## [2.10.22] - 2026-09-10
+
+### Fixed
+
+- Prevented tray context-menu deadlocks by caching theme host geometry outside the application state lock. ([#92](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/92))
+- Refreshed cached layout after shell and display changes while preserving live Theme Studio sizing.
+
+## [2.10.21] - 2026-09-09
+
+### Fixed
+
+- Kept the dashboard readable in Windows light app mode by consistently applying its dark theme. ([#91](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/91))
+
+## [2.10.20] - 2026-09-08
+
+### Changed
+
+- Streamlined the README around installation, usage, provider setup, privacy, troubleshooting, and source builds.
+
+## [2.10.19] - 2026-09-04
+
+### Added
+
+- Thai localization, including integration with the language catalogue. ([#88](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/88))
+
+## [2.9.19] - 2026-09-04
+
+### Fixed
+
+- Preserved the last valid usage values during transient polling failures, including when every provider fails.
+- Kept authentication failures and failures without cached data in an explicit error state.
+
+## [2.9.18] - 2026-09-03
+
+### Added
+
+- Polish localization. ([#90](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/90))
+
+## [2.8.18] - 2026-09-01
+
+### Added
+
+- Configurable HTTP(S) URL actions for theme-layer mouse events. ([#87](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/87))
+
+## [2.8.17] - 2026-08-28
+
+### Fixed
+
+- Restored live provider usage in tray tooltips. ([#85](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/85))
+
+## [2.8.16] - 2026-08-28
+
+### Changed
+
+- Raised the minimum supported Rust version to **1.95**.
+- Updated HTTP, Windows, UI, archive, TOML, icon, and other dependencies; migrated integrations to the updated APIs while retaining platform certificate verification.
+
+## [2.8.15] - 2026-08-27
+
+### Added
+
+- `get(this, property)` theme-expression lookup, including the current layer's resolved gap, with a Theme Studio helper.
+
+## [2.7.14] - 2026-08-27
+
+### Added
+
+- GitHub project link in the dashboard navigation footer.
+
+## [2.7.13] - 2026-08-24
+
+### Added
+
+- Localized local and UTC date/time formats for Theme Studio timestamps.
+- Live clock variables, with theme refreshes matched to the displayed time precision.
+
+## [2.6.13] - 2026-08-24
+
+### Added
+
+- Quoted string results from `if()` in Theme Studio text expressions, while keeping geometry and other numeric fields numeric-only.
+
+## [2.5.13] - 2026-08-21
+
+### Changed
+
+- Reused HTTP connections and polled providers concurrently with a bounded worker count and deterministic results.
+
+## [2.5.12] - 2026-08-21
+
+### Changed
+
+- Skipped window-state polling for themes without floating surfaces and avoided redundant floating-window visibility updates.
+
+## [2.5.11] - 2026-08-21
+
+### Fixed
+
+- Validated provider reset timestamps before conversion and correctly applied ISO 8601 timezone offsets.
+
+## [2.5.10] - 2026-08-21
+
+### Fixed
+
+- Prevented stale reset data from triggering repeated polls and bounded refresh requests queued during an active poll.
+
+## [2.5.9] - 2026-08-20
+
+### Added
+
+- OpenCode monthly usage-window bindings for custom themes. ([#79](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/79))
+
+## [2.4.9] - 2026-08-20
+
+### Fixed
+
+- Restored backward-compatible Codex session variables for existing custom themes.
+- Added exact Codex five-hour bindings for new and bundled themes.
+
+## [2.4.8] - 2026-08-20
+
+### Added
+
+- Paid credit tracking for Claude and Codex, including credit balances in Classic theme bars and tray badges. ([#81](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/81))
+- Theme bindings for credit usage, balances, headline usage, and stale provider data.
+- Persisted Codex credit baselines per account, including detection of balance top-ups.
+
+### Fixed
+
+- Retained a provider's last reading when another provider succeeds but that provider fails.
+- Treated rate limits, server errors, and transport failures as temporary Claude polling failures instead of falling back to a quota-consuming request.
+- Classified Codex rate-limit windows by duration and preserved legacy window behavior.
+
+## [2.3.8] - 2026-08-19
+
+### Added
+
+- Claude desktop token-cache support for installations without standalone CLI credentials, plus discovery of the desktop app's bundled CLI. ([#80](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/80))
+
+### Fixed
+
+- Ordered bundled Claude CLI versions correctly when selecting an executable.
+- Avoided unnecessary WSL credential probes when local credentials were already available.
+
+## [2.2.8] - 2026-08-17
+
+### Changed
+
+- Improved Theme Studio preview performance with asynchronous rendering scaled to the viewport and coalesced render requests.
+- Reduced unnecessary countdown redraws and aligned previews with the physical-pixel grid.
+
+## [2.2.7] - 2026-08-17
+
+### Added
+
+- Pixel-perfect Theme Studio preview zooming, pointer-anchored navigation, and bounded panning.
+
+## [2.2.6] - 2026-08-17
+
+### Fixed
+
+- Preserved fully rounded outer edges when rendering segmented progress bars with gaps.
+
+## [2.2.5] - 2026-08-17
+
+### Added
+
+- DPI-aware `host.width` and `host.height` theme expressions, resolved for each native surface before layout and rendering.
+
+## [2.2.4] - 2026-08-17
+
+### Changed
+
+- Restructured localization so contributors can add a language through a single file.
+
+## [2.2.3] - 2026-08-17
+
+### Added
+
+- Context Menus translations across all supported languages.
+
+## [2.2.2] - 2026-08-17
+
+### Added
+
+- Turkish language support.
+
+## [2.2.1] - 2026-08-16
+
+### Added
+
+- Cursor usage monitoring, with local session discovery through Windows' built-in SQLite library and a `CURSOR_SESSION_TOKEN` override. ([#68](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/68))
+- Cursor Auto/API usage displays with dedicated tray handling and localized labels.
+
+## [2.1.1] - 2026-08-16
+
+### Added
+
+- OpenCode Go provider support using dashboard credentials, with a rolling five-hour gauge and a longer-term gauge selecting the more-used weekly or monthly window.
+
+### Changed
+
+- Kept the integrated OpenCode provider dashboard-only, omitting the contribution's bundled SQLite fallback to avoid increasing executable size.
+
+## [2.0.1] - 2026-08-15
+
+### Fixed
+
+- Corrected WinGet manifest parsing.
+
+## [2.0.0] - 2026-08-15
+
+### Added
+
+- Native settings dashboard for providers, refresh frequency, language, startup, and updates, with a `--dashboard` launch option.
+- Visual Theme Studio with live previews, editable JSON themes, duplication, undo/redo, and optional live apply.
+- Theme layers with text, progress bars, images, gradients, nested layouts, expressions, and mouse actions across desktop, taskbar, and tray surfaces.
+- Context-menu editor with reusable menus, nested submenus, actions, and dynamic text labels.
+- Built-in Classic theme and an editable Minecraft starter theme.
+
+### Changed
+
+- Moved widget rendering to the theme engine, with Classic reproducing the original usage display.
+
+## [1.4.9] - 2026-07-17
+
+### Added
+
+- Simplified Chinese localization, including Chinese locale detection and corrected Macau mapping to Traditional Chinese.
+
+## [1.4.8] - 2026-06-20
+
+### Changed
+
+- Updated the README.
+
+## [1.4.7] - 2026-06-20
+
+### Added
+
+- Google Antigravity usage monitoring and localized provider controls. ([#31](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/31))
+
+### Changed
+
+- Tightened multi-provider spacing, used four bar segments in the three-provider layout, and applied Google blue to Antigravity.
+- Restricted widget dragging to its divider handle.
+
+### Fixed
+
+- Corrected a context-menu command ID collision in a follow-up commit carrying the same version number.
+
+## [1.4.6] - 2026-06-20
+
+### Added
+
+- Moving the widget between taskbars on different monitors. ([#37](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/37))
+
+### Fixed
+
+- Preserved Explorer-restart recovery after introducing multiple-taskbar support.
+
+## [1.4.5] - 2026-06-20
+
+### Fixed
+
+- Continued polling Codex when Claude fails, and Claude when Codex fails, instead of letting one provider block the other.
+- Preserved the original polling error when neither enabled provider succeeds.
+
+## [1.4.4] - 2026-06-20
+
+### Fixed
+
+- Recovered the widget and tray icon after Explorer restarts through a taskbar watchdog and controlled relaunch. ([#36](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/36))
+- Made the replacement process wait correctly for the previous instance to release its single-instance lock.
+
+## [1.4.3] - 2026-06-12
+
+### Added
+
+- Brazilian Portuguese localization, including language selection and automatic locale detection. ([#29](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/29))
+
+## [1.4.2] - 2026-06-12
+
+### Added
+
+- Russian localization, with a working language-menu command. ([#28](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/28))
+
+## [1.4.1] - 2026-05-13
+
+### Fixed
+
+- Corrected widget drag state.
+
+## [1.4.0] - 2026-05-09
+
+### Added
+
+- Codex usage monitoring through the model menu, with either provider or both visible.
+- Separate provider tray icons and colored text to distinguish providers in the combined display.
+
+## [1.3.9] - 2026-05-05
+
+### Fixed
+
+- Tried other credential sources after a permanent credential failure.
+
+## [1.3.8] - 2026-05-05
+
+### Fixed
+
+- Stopped stealing focus in response to tray-location events caused by the monitor's own icon updates.
+
+## [1.3.7] - 2026-05-04
+
+### Added
+
+- Dutch localization.
+
+## [1.3.6] - 2026-05-01
+
+### Added
+
+- Proxy environment-variable support for HTTP requests.
+
+## [1.3.5] - 2026-04-20
+
+### Fixed
+
+- Aligned displayed usage percentages with tray icon numbers.
+
+## [1.3.4] - 2026-04-19
+
+### Added
+
+- Tray notification when OAuth credentials expire. ([#15](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/15))
+
+### Fixed
+
+- Showed a consistent authentication warning for expired, invalid, or missing credentials, with updated translations.
+- Paused API polling and countdowns while authentication was required; watched credential-file changes to recover automatically, while retaining manual refresh support.
+
+## [1.3.3] - 2026-04-19
+
+### Added
+
+- Traditional Chinese localization. ([#13](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/13))
+
+## [1.3.2] - 2026-04-19
+
+### Fixed
+
+- Resolved a taskbar-positioning deadlock.
+
+## [1.3.1] - 2026-04-07
+
+### Added
+
+- Korean localization. ([#9](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/9))
+
+### Fixed
+
+- Localized the Show Widget command and session/weekly window labels.
+
+## [1.3.0] - 2026-03-31
+
+### Added
+
+- Native system tray icon with a live five-hour usage badge and tooltips for both usage windows. ([#6](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/6))
+- Left-click to toggle widget visibility and right-click for its context menu, with visibility remembered across launches.
+
+### Changed
+
+- Improved Windows app identity and embedded-icon handling.
+
+### Fixed
+
+- Refined taskbar anchoring and countdown formatting to avoid displaying values such as `61m`.
+
+## [1.2.10] - 2026-03-30
+
+### Fixed
+
+- Anchored the widget to the bottom of the taskbar to improve positioning.
+
+## [1.2.9] - 2026-03-27
+
+### Fixed
+
+- Improved the widget's vertical placement.
+
+## [1.2.8] - 2026-03-26
+
+### Fixed
+
+- Corrected update handling for portable and WinGet installations.
+
+## [1.2.7] - 2026-03-26
+
+### Changed
+
+- Updated the README with WinGet installation guidance.
+
+## [1.2.6] - 2026-03-25
+
+### Added
+
+- `--diagnose` option for troubleshooting startup issues.
+
+## [1.2.5] - 2026-03-23
+
+### Added
+
+- Update dialog when a manual update check finds a newer version.
+
+## [1.2.4] - 2026-03-21
+
+### Fixed
+
+- Added a timeout to WSL credential lookups to prevent startup from hanging. ([#4](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/pull/4))
+
+## [1.2.3] - 2026-03-19
+
+### Changed
+
+- Updated the README.
+
+## [1.2.2] - 2026-03-19
+
+### Changed
+
+- Split localization into separate files to simplify maintenance and translation contributions.
+
+## [1.2.1] - 2026-03-18
+
+### Added
+
+- WinGet distribution support and installation-aware update handling.
+
+## [1.2.0] - 2026-03-18
+
+### Added
+
+- Update checks and self-updating from GitHub releases.
+
+## [1.1.0] - 2026-03-18
+
+### Added
+
+- Windows-aware localization with a manual language override, supporting English, Spanish, French, German, and Japanese.
+
+## [1.0.15] - 2026-03-15
+
+### Added
+
+- WSL2 credential support.
+
+## [1.0.14] - 2026-03-15
+
+### Changed
+
+- Added Windows executable metadata and synchronized embedded file-version information with the package version.
+
+## [1.0.13] - 2026-03-15
+
+### Fixed
+
+- Prevented console-window flashes during token refresh.
+
+## [1.0.12] - 2026-03-11
+
+### Added
+
+- Windows high-DPI scaling support.
+
+## [1.0.11] - 2026-03-07
+
+### Fixed
+
+- Hid the Claude CLI window during background token refresh.
+
+## [1.0.10] - 2026-03-06
+
+### Added
+
+- Embedded application icon.
+
+## [1.0.9] - 2026-03-06
+
+### Fixed
+
+- Restored fallback to the previous rate-limit-header method when the usage endpoint fails.
+
+## [1.0.8] - 2026-03-05
+
+### Changed
+
+- Switched Claude usage polling to `/api/oauth/usage`.
+
+### Fixed
+
+- Corrected the app's displayed version.
+
+## [1.0.7] - 2026-03-05
+
+### Added
+
+- Dragging the widget to a preferred position.
+- Saved widget position and refresh frequency in `%APPDATA%\ClaudeCodeUsageMonitor\settings.json`.
+
+## [1.0.6] - 2026-03-05
+
+### Fixed
+
+- Improved Claude CLI discovery and used a CLI prompt to trigger token refresh when `claude auth status` did not refresh credentials.
+- Corrected Start with Windows handling and widened usage text to avoid clipping.
+
+## [1.0.5] - 2026-03-01
+
+### Fixed
+
+- Delegated token refresh to the Claude CLI and re-read its credentials, avoiding refresh-token rotation conflicts with Claude Code.
+
+### Removed
+
+- The monitor's direct OAuth refresh logic and in-memory refreshed-token cache.
+
+## [1.0.4] - 2026-03-01
+
+### Fixed
+
+- Cached refreshed OAuth tokens in memory across polling cycles.
+
+## [1.0.3] - 2026-02-27
+
+### Fixed
+
+- Balanced row spacing to center the widget vertically.
+
+## [1.0.2] - 2026-02-27
+
+### Added
+
+- Second-by-second countdowns during the final minute before a reset.
+- Temporary five-second polling after a reset, returning to the normal interval when fresh reset data arrives.
+
+## [1.0.1] - 2026-02-27
+
+### Added
+
+- Automatic OAuth token refresh and exponential retry backoff after polling failures.
+
+### Fixed
+
+- Displayed `...` during polling errors and prevented countdown updates from replacing the error indicator with stale data.
+
+## [1.0.0] - 2026-02-26
+
+### Added
+
+- Initial Windows taskbar widget for Claude Code, showing five-hour and weekly usage bars with reset countdowns.
+- Local OAuth credential discovery, configurable polling frequency, manual refresh, and automatic Windows light/dark styling.
+- Prebuilt Windows executable releases and MIT-licensed Rust source.
+
+
+[1.0.0]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/commit/a43200468049fff7d56f5693a96191a2829c5b62
+[1.0.1]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/a43200468049fff7d56f5693a96191a2829c5b62...d8d15dcdba6dfa76b6c3e890a3f9d349286b1008
+[1.0.2]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/d8d15dcdba6dfa76b6c3e890a3f9d349286b1008...266b8d5fb56fce922f48581ba7a17c5742f4d178
+[1.0.3]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/266b8d5fb56fce922f48581ba7a17c5742f4d178...187d12250ca7d85a4c4ba44e7856211ae7ff183d
+[1.0.4]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/187d12250ca7d85a4c4ba44e7856211ae7ff183d...6a3275517e186f0f5bab72d6e6a29076786bbdc7
+[1.0.5]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/6a3275517e186f0f5bab72d6e6a29076786bbdc7...fcad7fb848048e8e9e911a1df39e66bc0d30517c
+[1.0.6]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/fcad7fb848048e8e9e911a1df39e66bc0d30517c...9941c9a46d2a1c9f2be691491db8d2d513d98ae5
+[1.0.7]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/9941c9a46d2a1c9f2be691491db8d2d513d98ae5...55d3a88b1677ae6161c2f29f531ef8e00c9f8aee
+[1.0.8]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/55d3a88b1677ae6161c2f29f531ef8e00c9f8aee...ad4467e81431055b61cb8e3c9d2d29428c2ef988
+[1.0.9]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/ad4467e81431055b61cb8e3c9d2d29428c2ef988...c8bd9683dd8f11c529321740bb636b86379f714d
+[1.0.10]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/c8bd9683dd8f11c529321740bb636b86379f714d...a68f80181273284a0fbe4f04d13c19393b3759f8
+[1.0.11]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/a68f80181273284a0fbe4f04d13c19393b3759f8...4de95f0bde86ee98df91262bb08a679f2bc0ae62
+[1.0.12]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/4de95f0bde86ee98df91262bb08a679f2bc0ae62...97ca8f8468092df1f57ca1870094239137cb2677
+[1.0.13]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/97ca8f8468092df1f57ca1870094239137cb2677...50d656bd5349ea59877a201af3824e63f1c88062
+[1.0.14]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/50d656bd5349ea59877a201af3824e63f1c88062...7960ae9218ba844bf44e0a8037736e3b3741542d
+[1.0.15]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/7960ae9218ba844bf44e0a8037736e3b3741542d...ec4177f7f61aecb12b7aecf3cc8172fb4dc05123
+[1.1.0]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/ec4177f7f61aecb12b7aecf3cc8172fb4dc05123...d6ea143f0566eaf80527e13afa4520fb08b69d08
+[1.2.0]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/d6ea143f0566eaf80527e13afa4520fb08b69d08...832e70fd72a88f4b33481f447e2ffefae8b04077
+[1.2.1]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/832e70fd72a88f4b33481f447e2ffefae8b04077...e28bc51ab1bc835e74a40e6f6e5c8618acf0c9be
+[1.2.2]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/e28bc51ab1bc835e74a40e6f6e5c8618acf0c9be...6d03532d5072054293d7786e3c587ebb4b80795c
+[1.2.3]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/6d03532d5072054293d7786e3c587ebb4b80795c...5e039fa7dc4b7871d58d718b600cd945ca926555
+[1.2.4]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/5e039fa7dc4b7871d58d718b600cd945ca926555...81a26eaf613bf8322ee59983ef081c8f139da952
+[1.2.5]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/81a26eaf613bf8322ee59983ef081c8f139da952...110ae4ac58734b193a9460353e5d901112750233
+[1.2.6]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/110ae4ac58734b193a9460353e5d901112750233...f527e82928767bedb42c4525c646fc03b2f238fc
+[1.2.7]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/f527e82928767bedb42c4525c646fc03b2f238fc...9c8f73cf69776359821247ebf05ba890d8d16078
+[1.2.8]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/9c8f73cf69776359821247ebf05ba890d8d16078...65cf2b5d1678c52003fa3742c7fa36e997af950d
+[1.2.9]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/65cf2b5d1678c52003fa3742c7fa36e997af950d...7ef75f4c0b185e744c26ae72d932123d6f6006a7
+[1.2.10]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/7ef75f4c0b185e744c26ae72d932123d6f6006a7...ba84737ffbada4d1a3eca0bfe81603b5fea97a98
+[1.3.0]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/ba84737ffbada4d1a3eca0bfe81603b5fea97a98...643cc0a8b680e07e2b55aadd222f01d4e05be05e
+[1.3.1]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/643cc0a8b680e07e2b55aadd222f01d4e05be05e...a407f6945381302ae3bbdc0883543cb4bd4681ee
+[1.3.2]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/a407f6945381302ae3bbdc0883543cb4bd4681ee...b0fcd92af4cb4fd51dd2ee25f90259b5877f6cae
+[1.3.3]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/b0fcd92af4cb4fd51dd2ee25f90259b5877f6cae...3bc9be442e151c291f1fda1fc9f9ef2d3bf3795e
+[1.3.4]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/3bc9be442e151c291f1fda1fc9f9ef2d3bf3795e...17c63517ca394977229160702a3f0dcc68f16033
+[1.3.5]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/17c63517ca394977229160702a3f0dcc68f16033...35f945daa9938d684dca2a5ff9dc0286993622e5
+[1.3.6]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/35f945daa9938d684dca2a5ff9dc0286993622e5...63806d5421e1b5e2f7e468624835fb123e87a4c1
+[1.3.7]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/63806d5421e1b5e2f7e468624835fb123e87a4c1...ae9be6704a1d8e588c1db6ac24266ebe03139686
+[1.3.8]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/ae9be6704a1d8e588c1db6ac24266ebe03139686...f2b378462d6916eaa6ef465e8afa325c95f8b75c
+[1.3.9]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/f2b378462d6916eaa6ef465e8afa325c95f8b75c...d54588bf6e0937c9ea72100dfedf226f26331d1a
+[1.4.0]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/d54588bf6e0937c9ea72100dfedf226f26331d1a...4676f6f72eadf6c9076629e07f904f4200ce1b6e
+[1.4.1]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/4676f6f72eadf6c9076629e07f904f4200ce1b6e...b5f038dd3946278e47fad0899bbe890c675df5e0
+[1.4.2]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/b5f038dd3946278e47fad0899bbe890c675df5e0...286dd89a67a154ee493441bbd86964c958610547
+[1.4.3]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/286dd89a67a154ee493441bbd86964c958610547...7af314996d19265de3b93f7afc4b7a5c173c488c
+[1.4.4]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/7af314996d19265de3b93f7afc4b7a5c173c488c...b46e11fbf86060788b545c379d5b66087c4d9d07
+[1.4.5]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/b46e11fbf86060788b545c379d5b66087c4d9d07...c333fdfa14e78c71c7698021b02734193b0ad7ae
+[1.4.6]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/c333fdfa14e78c71c7698021b02734193b0ad7ae...c4e9dcb1ef9ad5442d62346e7f673d1757e9549a
+[1.4.7]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/c4e9dcb1ef9ad5442d62346e7f673d1757e9549a...c64de77d8b526a374942086ca3bf51f75d2fa416
+[1.4.8]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/c64de77d8b526a374942086ca3bf51f75d2fa416...9b299725c62f51aff82577a7ec634a5fd14a3bd9
+[1.4.9]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/9b299725c62f51aff82577a7ec634a5fd14a3bd9...7b108da813550fc9500a3d8843ed207ab55b07df
+[2.0.0]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/7b108da813550fc9500a3d8843ed207ab55b07df...f7accd587f6c0c37e307b5784b67f361c0a7e3e8
+[2.0.1]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/f7accd587f6c0c37e307b5784b67f361c0a7e3e8...f30b2f09d559d5b42a161e8493d9cff3fb53e4bd
+[2.1.1]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/f30b2f09d559d5b42a161e8493d9cff3fb53e4bd...d6e7d0afb6f5fd5fefe67cfa7239e82dbfbac161
+[2.2.1]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/d6e7d0afb6f5fd5fefe67cfa7239e82dbfbac161...39dcbdea73b958426e213435dd3203033f5369d1
+[2.2.2]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/39dcbdea73b958426e213435dd3203033f5369d1...46b4e2272bded3b036b57b9d3b72e8b1e063445b
+[2.2.3]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/46b4e2272bded3b036b57b9d3b72e8b1e063445b...0ee6c73b875a2dbdbb31b6e82b3952226e02075c
+[2.2.4]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/0ee6c73b875a2dbdbb31b6e82b3952226e02075c...3e0e577f8112e902b6a7b4ab62ce974bc10591fb
+[2.2.5]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/3e0e577f8112e902b6a7b4ab62ce974bc10591fb...ac8742a0596a11b3b8048e7e7c51d1d04b6aada9
+[2.2.6]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/ac8742a0596a11b3b8048e7e7c51d1d04b6aada9...870e0abf4b1607a435ed387da32387c252d25b0a
+[2.2.7]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/870e0abf4b1607a435ed387da32387c252d25b0a...1f9ed30c19b7756f72cc7fd9cd5480351e93d49a
+[2.2.8]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/1f9ed30c19b7756f72cc7fd9cd5480351e93d49a...20ae4be022f31249e58b463ad22840a9a99d9781
+[2.3.8]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/20ae4be022f31249e58b463ad22840a9a99d9781...5dc567882f63a1e12dfed6ca7bb069a2ea531a25
+[2.4.8]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/5dc567882f63a1e12dfed6ca7bb069a2ea531a25...0e49ee5e610f9a1f266e755343a7317602e734db
+[2.4.9]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/0e49ee5e610f9a1f266e755343a7317602e734db...cc565738032a17175b0da6c7540f899d57540ea3
+[2.5.9]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/cc565738032a17175b0da6c7540f899d57540ea3...d45438b90ab5c0fcf44fb9608bdf647310a1819d
+[2.5.10]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/d45438b90ab5c0fcf44fb9608bdf647310a1819d...fb74f9a72ecd0923c1c468a54f430b35e891dd55
+[2.5.11]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/fb74f9a72ecd0923c1c468a54f430b35e891dd55...57485d420ae15e47b5bfbb596e758437b7fe28e8
+[2.5.12]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/57485d420ae15e47b5bfbb596e758437b7fe28e8...abca61e0caac6acd57f84accc3808d591bd694b5
+[2.5.13]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/abca61e0caac6acd57f84accc3808d591bd694b5...02a0f21a5143545b3109543065d13e022f8e677a
+[2.6.13]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/02a0f21a5143545b3109543065d13e022f8e677a...a0e28cb3ab04fb2dd8a75f3179944731aa8e6400
+[2.7.13]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/a0e28cb3ab04fb2dd8a75f3179944731aa8e6400...318a8b57ee40e4847125bae9d542482013c3b67e
+[2.7.14]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/318a8b57ee40e4847125bae9d542482013c3b67e...12bc4eee5becd4270920e0dde98575e5e39f06cc
+[2.8.15]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/12bc4eee5becd4270920e0dde98575e5e39f06cc...b8e16fd62e71e017c83b4de8c09ef1d451eb8f3b
+[2.8.16]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/b8e16fd62e71e017c83b4de8c09ef1d451eb8f3b...9aa35e6a64dc3ed87fa5a8d9b11b08cd601f532b
+[2.8.17]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/9aa35e6a64dc3ed87fa5a8d9b11b08cd601f532b...3c8263012d4ee8de8156205c8dd1b0c6f3b8de43
+[2.8.18]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/3c8263012d4ee8de8156205c8dd1b0c6f3b8de43...63bf911d4ebc87e63235a7c1e1808716aceaf798
+[2.9.18]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/63bf911d4ebc87e63235a7c1e1808716aceaf798...97f4fd9b4a26f722c4f0be78f01098e013b35552
+[2.9.19]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/97f4fd9b4a26f722c4f0be78f01098e013b35552...97d870dc8693ec98ddf6f020ad88597ea462a03c
+[2.10.19]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/97d870dc8693ec98ddf6f020ad88597ea462a03c...c02d04457acad549d0f2a939b4549698413f7867
+[2.10.20]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/c02d04457acad549d0f2a939b4549698413f7867...ef171ac0d7b422f0446385513f908f79274d8547
+[2.10.21]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/ef171ac0d7b422f0446385513f908f79274d8547...845454e6623197a5cf76dcc744fc4fc89e82019f
+[2.10.22]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/845454e6623197a5cf76dcc744fc4fc89e82019f...1584e62b27520f4104df072582667ffa494d86c9
+[2.10.23]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/1584e62b27520f4104df072582667ffa494d86c9...8ad64219d57c2c59b4318412950a42e43e2abc5a
+[2.10.24]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/8ad64219d57c2c59b4318412950a42e43e2abc5a...8f9afef889e3a0e8a180214abcd119d2276f00c5
+[2.10.25]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/8f9afef889e3a0e8a180214abcd119d2276f00c5...b4a4d0e91f95279ae08285baf843b624666d2db1
+[2.10.26]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/b4a4d0e91f95279ae08285baf843b624666d2db1...de6b0d5facaa206704c0b3459bd51dabee8a556a
+[2.10.27]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/de6b0d5facaa206704c0b3459bd51dabee8a556a...c0a486882671cf836e8f07afe63741432df52640
+[2.11.28]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/c0a486882671cf836e8f07afe63741432df52640...314054f7e9713456d4f02d52440bdfda451e22a3
+[2.11.29]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/314054f7e9713456d4f02d52440bdfda451e22a3...d113a08d35cf417008b206be7d67e2ddcddd1750
+[2.12.30]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/d113a08d35cf417008b206be7d67e2ddcddd1750...793c289717a6e29753a2ec90f90c929669b0eff4
+[2.12.31]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/793c289717a6e29753a2ec90f90c929669b0eff4...19a039d79b48aca2174765a96325bfa0c43493cb
+[2.12.32]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/19a039d79b48aca2174765a96325bfa0c43493cb...cce396d5c0f168de89da459f320375641563505a
+[2.12.33]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/cce396d5c0f168de89da459f320375641563505a...46d2c7c4df4acdaca8caf6fa93a056b3c991854e
+[2.12.34]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/46d2c7c4df4acdaca8caf6fa93a056b3c991854e...71afcd3726e5aca62eb3e7fcd30f33ed6e48ada3
+[2.12.35]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/71afcd3726e5aca62eb3e7fcd30f33ed6e48ada3...b1822e59cbcd3bfc53f1874da6e9ca26fe670bf6
+[2.12.36]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/b1822e59cbcd3bfc53f1874da6e9ca26fe670bf6...840d5d57df51d0bb316fdcb9b4490f92656791be
+[2.12.37]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/840d5d57df51d0bb316fdcb9b4490f92656791be...68690d86cca38a5cab75803fbd83ca1395c42d4f
+[2.12.38]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.12.37...v2.12.38
+[2.12.39]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.12.38...v2.12.39
+[2.12.40]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.12.39...v2.12.40
+[2.12.41]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.12.40...v2.12.41
+[2.12.42]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.12.41...v2.12.42
+[2.13.43]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.12.42...v2.13.43
+[2.13.44]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.13.43...v2.13.44
+[2.14.45]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.13.44...v2.14.45
+[2.14.46]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.14.45...v2.14.46
+[2.14.47]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.14.46...v2.14.47
+[2.14.48]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.14.47...v2.14.48
+[2.14.49]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.14.48...v2.14.49
+[2.14.50]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.14.49...v2.14.50
+[2.14.51]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.14.50...v2.14.51
+[2.14.52]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.14.51...v2.14.52
+[2.14.53]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.14.52...v2.14.53
+[2.14.54]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.14.53...v2.14.54
+[2.14.55]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.14.54...v2.14.55
+[2.14.56]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.14.55...v2.14.56
+[2.14.57]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.14.56...v2.14.57
+[2.14.58]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.14.57...v2.14.58
+[2.14.59]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.14.58...v2.14.59
+[2.14.60]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.14.59...v2.14.60
+[2.14.61]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.14.60...v2.14.61
+[2.14.62]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.14.61...v2.14.62
+[2.14.63]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.14.62...v2.14.63
+[2.14.64]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.14.63...v2.14.64
+[2.15.0]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.14.64...v2.15.0
+[2.15.1]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.0...v2.15.1
+[2.15.2]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.1...v2.15.2
+[2.15.3]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.2...v2.15.3
+[2.15.4]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.3...v2.15.4
+[2.15.5]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.4...v2.15.5
+[2.15.6]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.5...v2.15.6
+[2.15.7]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.6...v2.15.7
+[2.15.8]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.7...v2.15.8
+[2.15.9]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.8...v2.15.9
+[2.15.10]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.9...v2.15.10
+[2.15.11]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.10...v2.15.11
+[2.15.12]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.11...v2.15.12
+[2.15.13]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.12...v2.15.13
+[2.15.14]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.13...v2.15.14
+[2.15.15]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.14...v2.15.15
+[2.15.16]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.15...v2.15.16
+[2.15.17]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.16...v2.15.17
+[2.15.18]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.17...v2.15.18
+[2.15.19]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.18...v2.15.19
+[2.15.20]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.19...v2.15.20
+[2.15.21]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.20...v2.15.21
+[2.15.22]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.21...v2.15.22
+[2.16.0]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.15.22...v2.16.0
+[2.17.0]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.16.0...v2.17.0
+[2.17.1]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.17.0...v2.17.1
+[2.18.0]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.17.1...v2.18.0
+[2.18.1]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.18.0...v2.18.1
+[2.19.0]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.18.1...v2.19.0
+[2.19.1]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.19.0...v2.19.1
+[2.19.2]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.19.1...v2.19.2
+[2.19.3]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.19.2...v2.19.3
+[2.19.4]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.19.3...v2.19.4
+[2.19.5]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.19.4...v2.19.5
+[2.19.6]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.19.5...v2.19.6
+[2.19.7]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.19.6...v2.19.7
+[2.19.8]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.19.7...v2.19.8
+[2.19.9]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.19.8...v2.19.9
+[2.19.10]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.19.9...v2.19.10
+[2.20.0]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.19.10...v2.20.0
+[2.20.1]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.20.0...v2.20.1
+[2.20.2]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.20.1...v2.20.2
+[2.20.3]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.20.2...v2.20.3
+[2.21.0]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.20.3...v2.21.0
+[2.21.1]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.21.0...v2.21.1
+[2.21.2]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.21.1...v2.21.2
+[2.21.3]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.21.2...v2.21.3
+[2.22.0]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.21.3...v2.22.0
+[2.22.1]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.22.0...v2.22.1
+[2.22.2]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.22.1...v2.22.2
+[2.22.3]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.22.2...v2.22.3
+[2.22.4]: https://github.com/CodeZeno/Claude-Code-Usage-Monitor/compare/v2.22.3...v2.22.4

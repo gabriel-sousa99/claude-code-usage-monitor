@@ -488,32 +488,92 @@ pub fn parse_color(source: &str) -> Option<Rgba> {
 }
 
 pub(super) fn format_usage_line(base: &str, context: &DataContext) -> Option<String> {
-    let mut parts = base.split('.');
-    let provider = parts.next()?;
-    let window = parts.next()?;
-    if parts.next().is_some()
-        || !matches!(
+    // Existing summaries always show consumption. A `.display` suffix opts
+    // this individual token into the user's usage direction preference.
+    let (base, metric) = base
+        .strip_suffix(".display")
+        .map(|base| (base, "display"))
+        .unwrap_or((base, "percentage"));
+    let dynamic = DataContext::limit_field(&format!("{base}.available"))
+        .filter(|(_, field)| *field == "available")
+        .map(|(owner, _)| owner.to_string());
+    let (provider, window) = if let Some(owner) = dynamic.as_deref() {
+        (owner, &base[owner.len() + 1..])
+    } else {
+        base.rsplit_once('.')?
+    };
+    let named_account = provider
+        .strip_prefix("accounts.")
+        .and_then(|path| path.split_once('.'))
+        .is_some_and(|(provider, id)| {
+            matches!(provider, "claude" | "codex")
+                && !id.is_empty()
+                && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        });
+    if (!named_account
+        && !matches!(
             provider,
-            "active" | "claude" | "codex" | "antigravity" | "opencode" | "cursor"
-        )
-        || !matches!(
-            window,
-            "session" | "five_hour" | "weekly" | "monthly" | "credits"
-        )
+            "active"
+                | "claude"
+                | "codex"
+                | "antigravity"
+                | "antigravity.gemini"
+                | "antigravity.external"
+                | "opencode"
+                | "cursor"
+                | "grok"
+                | "copilot"
+        ))
+        || (dynamic.is_none()
+            && !matches!(
+                window,
+                "session" | "five_hour" | "weekly" | "monthly" | "credits"
+            ))
     {
         return None;
     }
-    if context.get("data.loading").unwrap_or(0.0) != 0.0 {
+    let scoped_error = context.get(&format!("{provider}.has_error")).or_else(|| {
+        if provider.starts_with("antigravity.") {
+            context.get("antigravity.has_error")
+        } else {
+            None
+        }
+    });
+    if scoped_error.is_none() && context.get("data.loading").unwrap_or(0.0) != 0.0 {
         return Some("--".into());
     }
-    if context.get("data.has_error").unwrap_or(0.0) != 0.0
+    let available = context.get(&format!("{provider}.available")).unwrap_or(0.0) != 0.0;
+    // A pool Antigravity did not report, while Antigravity itself answered, is
+    // "no limit data", not an error.
+    if provider.starts_with("antigravity")
+        && context.get("antigravity.reported").unwrap_or(0.0) != 0.0
+        && (!available || context.get(&format!("{provider}.{window}.available")) == Some(0.0))
+    {
+        return Some("--".into());
+    }
+    if scoped_error == Some(0.0) && !available {
+        return Some("--".into());
+    }
+    if scoped_error
+        .map(|error| error != 0.0 && !available)
+        .unwrap_or_else(|| context.get("data.has_error").unwrap_or(0.0) != 0.0)
         || (context.get("data.poll_ok").unwrap_or(1.0) != 0.0
             && context.get(&format!("{provider}.available")).unwrap_or(0.0) == 0.0)
     {
         return Some("!".into());
     }
+    if dynamic.is_some() && context.get(&format!("{base}.available")) == Some(0.0) {
+        return Some("--".into());
+    }
+    // An Antigravity pool may report one window but not the other; an absent
+    // window is "no limit data", not 0% used.
+    if provider.starts_with("antigravity")
+        && context.get(&format!("{provider}.{window}.available")) == Some(0.0)
+    {
+        return Some("--".into());
+    }
     let percentage = context
-        .get(&format!("{provider}.{window}.percentage"))
+        .get(&format!("{provider}.{window}.{metric}"))
         .unwrap_or(0.0);
     let percentage = format_value(percentage, "0", context);
     if context
@@ -545,26 +605,59 @@ pub(super) fn localized<'a>(context: &'a DataContext, name: &str, fallback: &'a 
     context.get_string(name).unwrap_or(fallback)
 }
 
+fn format_half_step(val: f64, suffix: &str) -> String {
+    let rounded = (val * 2.0).round() / 2.0;
+    if rounded.fract().abs() < 1e-4 {
+        format!("{:.0}{suffix}", rounded)
+    } else {
+        format!("{:.1}{suffix}", rounded)
+    }
+}
+
+pub(super) fn format_duration_short(seconds: u64, context: &DataContext) -> String {
+    let day_suffix = localized(context, "i18n.day_suffix", "d");
+    let hour_suffix = localized(context, "i18n.hour_suffix", "h");
+    let minute_suffix = localized(context, "i18n.minute_suffix", "m");
+    let second_suffix = localized(context, "i18n.second_suffix", "s");
+
+    if seconds >= 86_400 {
+        if seconds >= 864_000 {
+            // Round the remainder so even saturated template values cannot overflow.
+            let days = seconds / 86_400 + u64::from(seconds % 86_400 >= 43_200);
+            format!("{days}{day_suffix}")
+        } else {
+            let days = seconds as f64 / 86_400.0;
+            format_half_step(days, day_suffix)
+        }
+    } else if seconds >= 3_600 {
+        if seconds >= 36_000 {
+            let hours = (seconds + 1800) / 3600;
+            if hours >= 24 {
+                format!("1{day_suffix}")
+            } else {
+                format!("{hours}{hour_suffix}")
+            }
+        } else {
+            let hours = seconds as f64 / 3600.0;
+            format_half_step(hours, hour_suffix)
+        }
+    } else if seconds >= 60 {
+        let minutes = ((seconds + 30) / 60).min(59);
+        format!("{minutes}{minute_suffix}")
+    } else if seconds > 0 {
+        format!("{seconds}{second_suffix}")
+    } else {
+        localized(context, "i18n.now", "now").to_string()
+    }
+}
+
 pub(super) fn format_value(value: f64, format: &str, context: &DataContext) -> String {
     if let Some(value) = format_timestamp(value, format, context) {
         return value;
     }
     if format.eq_ignore_ascii_case("duration_short") {
         let seconds = value.max(0.0).round() as u64;
-        let days = seconds / 86_400;
-        let hours = seconds / 3_600;
-        let minutes = seconds / 60;
-        return if days > 0 {
-            format!("{days}{}", localized(context, "i18n.day_suffix", "d"))
-        } else if hours > 0 {
-            format!("{hours}{}", localized(context, "i18n.hour_suffix", "h"))
-        } else if minutes > 0 {
-            format!("{minutes}{}", localized(context, "i18n.minute_suffix", "m"))
-        } else if seconds > 0 {
-            format!("{seconds}{}", localized(context, "i18n.second_suffix", "s"))
-        } else {
-            localized(context, "i18n.now", "now").to_string()
-        };
+        return format_duration_short(seconds, context);
     }
     if format.eq_ignore_ascii_case("duration") {
         let seconds = value.max(0.0).round() as u64;

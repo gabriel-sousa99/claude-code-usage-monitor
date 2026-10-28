@@ -1,5 +1,54 @@
 use super::*;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum TextTemplateFormat {
+    Automatic,
+    WholeNumber,
+    OneDecimal,
+    TwoDecimals,
+    Percentage,
+    ShortDuration,
+    DetailedDuration,
+    UsageLine,
+    UsageBadge,
+    WeekdayTwo,
+    WeekdayShort,
+    WeekdayLong,
+    Day,
+    DayTwo,
+    Month,
+    MonthTwo,
+    MonthShort,
+    MonthLong,
+    YearTwo,
+    Year,
+    DateShort,
+    DateLong,
+    TimeShort,
+    TimeSeconds,
+    Time24,
+    Time24Seconds,
+    Time12,
+    Time12Seconds,
+    DateTimeShort,
+    DateTimeLong,
+    IsoDate,
+    IsoTime,
+    IsoDateTime,
+    PlainText,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum TextTemplateValueKind {
+    Number,
+    Percentage,
+    DisplayPercentage,
+    Duration,
+    Timestamp,
+    UsageSummary,
+    Text,
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct TextTemplateValue {
     pub(super) group: &'static str,
@@ -46,6 +95,12 @@ pub(super) const TEXT_TEMPLATE_VALUES: &[TextTemplateValue] = &[
         kind: TextTemplateValueKind::Number,
     },
     TextTemplateValue {
+        group: "General",
+        label: "Counting down",
+        expression: "display.countdown",
+        kind: TextTemplateValueKind::Number,
+    },
+    TextTemplateValue {
         group: "Active provider",
         label: "Session summary",
         expression: "active.session",
@@ -62,6 +117,12 @@ pub(super) const TEXT_TEMPLATE_VALUES: &[TextTemplateValue] = &[
         label: "Session remaining",
         expression: "active.session.remaining",
         kind: TextTemplateValueKind::Percentage,
+    },
+    TextTemplateValue {
+        group: "Active provider",
+        label: "Session shown",
+        expression: "active.session.display",
+        kind: TextTemplateValueKind::DisplayPercentage,
     },
     TextTemplateValue {
         group: "Active provider",
@@ -95,6 +156,12 @@ pub(super) const TEXT_TEMPLATE_VALUES: &[TextTemplateValue] = &[
     },
     TextTemplateValue {
         group: "Active provider",
+        label: "Weekly shown",
+        expression: "active.weekly.display",
+        kind: TextTemplateValueKind::DisplayPercentage,
+    },
+    TextTemplateValue {
+        group: "Active provider",
         label: "Weekly reset",
         expression: "active.weekly.reset.seconds",
         kind: TextTemplateValueKind::Duration,
@@ -125,6 +192,12 @@ pub(super) const TEXT_TEMPLATE_VALUES: &[TextTemplateValue] = &[
     },
     TextTemplateValue {
         group: "Claude Code",
+        label: "Session shown",
+        expression: "claude.session.display",
+        kind: TextTemplateValueKind::DisplayPercentage,
+    },
+    TextTemplateValue {
+        group: "Claude Code",
         label: "Session reset",
         expression: "claude.session.reset.seconds",
         kind: TextTemplateValueKind::Duration,
@@ -146,6 +219,12 @@ pub(super) const TEXT_TEMPLATE_VALUES: &[TextTemplateValue] = &[
         label: "Weekly remaining",
         expression: "claude.weekly.remaining",
         kind: TextTemplateValueKind::Percentage,
+    },
+    TextTemplateValue {
+        group: "Claude Code",
+        label: "Weekly shown",
+        expression: "claude.weekly.display",
+        kind: TextTemplateValueKind::DisplayPercentage,
     },
     TextTemplateValue {
         group: "Claude Code",
@@ -173,6 +252,12 @@ pub(super) const TEXT_TEMPLATE_VALUES: &[TextTemplateValue] = &[
     },
     TextTemplateValue {
         group: "Codex",
+        label: "Session shown",
+        expression: "codex.session.display",
+        kind: TextTemplateValueKind::DisplayPercentage,
+    },
+    TextTemplateValue {
+        group: "Codex",
         label: "Session reset",
         expression: "codex.session.reset.seconds",
         kind: TextTemplateValueKind::Duration,
@@ -194,6 +279,12 @@ pub(super) const TEXT_TEMPLATE_VALUES: &[TextTemplateValue] = &[
         label: "Five-hour remaining (exact)",
         expression: "codex.five_hour.remaining",
         kind: TextTemplateValueKind::Percentage,
+    },
+    TextTemplateValue {
+        group: "Codex",
+        label: "Five-hour shown (exact)",
+        expression: "codex.five_hour.display",
+        kind: TextTemplateValueKind::DisplayPercentage,
     },
     TextTemplateValue {
         group: "Codex",
@@ -227,6 +318,12 @@ pub(super) const TEXT_TEMPLATE_VALUES: &[TextTemplateValue] = &[
     },
     TextTemplateValue {
         group: "Codex",
+        label: "Weekly shown",
+        expression: "codex.weekly.display",
+        kind: TextTemplateValueKind::DisplayPercentage,
+    },
+    TextTemplateValue {
+        group: "Codex",
         label: "Weekly reset",
         expression: "codex.weekly.reset.seconds",
         kind: TextTemplateValueKind::Duration,
@@ -257,6 +354,12 @@ pub(super) const TEXT_TEMPLATE_VALUES: &[TextTemplateValue] = &[
     },
     TextTemplateValue {
         group: "Antigravity",
+        label: "Session shown",
+        expression: "antigravity.session.display",
+        kind: TextTemplateValueKind::DisplayPercentage,
+    },
+    TextTemplateValue {
+        group: "Antigravity",
         label: "Session reset",
         expression: "antigravity.session.reset.seconds",
         kind: TextTemplateValueKind::Duration,
@@ -281,6 +384,12 @@ pub(super) const TEXT_TEMPLATE_VALUES: &[TextTemplateValue] = &[
     },
     TextTemplateValue {
         group: "Antigravity",
+        label: "Weekly shown",
+        expression: "antigravity.weekly.display",
+        kind: TextTemplateValueKind::DisplayPercentage,
+    },
+    TextTemplateValue {
+        group: "Antigravity",
         label: "Weekly reset",
         expression: "antigravity.weekly.reset.seconds",
         kind: TextTemplateValueKind::Duration,
@@ -302,6 +411,12 @@ pub(super) const TEXT_TEMPLATE_VALUES: &[TextTemplateValue] = &[
         label: "Session remaining",
         expression: "opencode.session.remaining",
         kind: TextTemplateValueKind::Percentage,
+    },
+    TextTemplateValue {
+        group: "OpenCode",
+        label: "Session shown",
+        expression: "opencode.session.display",
+        kind: TextTemplateValueKind::DisplayPercentage,
     },
     TextTemplateValue {
         group: "OpenCode",
@@ -335,6 +450,12 @@ pub(super) const TEXT_TEMPLATE_VALUES: &[TextTemplateValue] = &[
     },
     TextTemplateValue {
         group: "OpenCode",
+        label: "Long-window shown",
+        expression: "opencode.weekly.display",
+        kind: TextTemplateValueKind::DisplayPercentage,
+    },
+    TextTemplateValue {
+        group: "OpenCode",
         label: "Long-window reset",
         expression: "opencode.weekly.reset.seconds",
         kind: TextTemplateValueKind::Duration,
@@ -356,6 +477,12 @@ pub(super) const TEXT_TEMPLATE_VALUES: &[TextTemplateValue] = &[
         label: "Auto remaining",
         expression: "cursor.session.remaining",
         kind: TextTemplateValueKind::Percentage,
+    },
+    TextTemplateValue {
+        group: "Cursor",
+        label: "Auto shown",
+        expression: "cursor.session.display",
+        kind: TextTemplateValueKind::DisplayPercentage,
     },
     TextTemplateValue {
         group: "Cursor",
@@ -383,8 +510,80 @@ pub(super) const TEXT_TEMPLATE_VALUES: &[TextTemplateValue] = &[
     },
     TextTemplateValue {
         group: "Cursor",
+        label: "API shown",
+        expression: "cursor.weekly.display",
+        kind: TextTemplateValueKind::DisplayPercentage,
+    },
+    TextTemplateValue {
+        group: "Cursor",
         label: "API reset",
         expression: "cursor.weekly.reset.seconds",
+        kind: TextTemplateValueKind::Duration,
+    },
+    TextTemplateValue {
+        group: "Grok",
+        label: "Pool summary",
+        expression: "grok.weekly",
+        kind: TextTemplateValueKind::UsageSummary,
+    },
+    TextTemplateValue {
+        group: "Grok",
+        label: "Pool used",
+        expression: "grok.weekly.percentage",
+        kind: TextTemplateValueKind::Percentage,
+    },
+    TextTemplateValue {
+        group: "Grok",
+        label: "Pool remaining",
+        expression: "grok.weekly.remaining",
+        kind: TextTemplateValueKind::Percentage,
+    },
+    TextTemplateValue {
+        group: "Grok",
+        label: "Pool shown",
+        expression: "grok.weekly.display",
+        kind: TextTemplateValueKind::DisplayPercentage,
+    },
+    TextTemplateValue {
+        group: "Grok",
+        label: "Pool reset",
+        expression: "grok.weekly.reset.seconds",
+        kind: TextTemplateValueKind::Duration,
+    },
+    TextTemplateValue {
+        group: "Grok",
+        label: "Pool period label",
+        expression: "grok.weekly.label",
+        kind: TextTemplateValueKind::Text,
+    },
+    TextTemplateValue {
+        group: "Copilot",
+        label: "Premium requests summary",
+        expression: "copilot.weekly",
+        kind: TextTemplateValueKind::UsageSummary,
+    },
+    TextTemplateValue {
+        group: "Copilot",
+        label: "Premium requests used",
+        expression: "copilot.weekly.percentage",
+        kind: TextTemplateValueKind::Percentage,
+    },
+    TextTemplateValue {
+        group: "Copilot",
+        label: "Premium requests remaining",
+        expression: "copilot.weekly.remaining",
+        kind: TextTemplateValueKind::Percentage,
+    },
+    TextTemplateValue {
+        group: "Copilot",
+        label: "Premium requests shown",
+        expression: "copilot.weekly.display",
+        kind: TextTemplateValueKind::DisplayPercentage,
+    },
+    TextTemplateValue {
+        group: "Copilot",
+        label: "Premium requests reset",
+        expression: "copilot.weekly.reset.seconds",
         kind: TextTemplateValueKind::Duration,
     },
     TextTemplateValue {
@@ -414,6 +613,156 @@ pub(super) fn text_template_value(expression: &str) -> Option<TextTemplateValue>
         .find(|value| value.expression == expression)
 }
 
+pub(super) struct TextTemplateChoice {
+    pub(super) group: &'static str,
+    pub(super) label: String,
+    pub(super) expression: String,
+    pub(super) kind: TextTemplateValueKind,
+}
+
+pub(super) fn limit_provider(expression: &str) -> Option<(&'static str, &'static str)> {
+    let path = expression.strip_prefix("accounts.").unwrap_or(expression);
+    let (provider, _) = path.split_once('.')?;
+    if provider == "active" {
+        return Some(("Active provider", "active"));
+    }
+    PROVIDER_DESCRIPTORS
+        .iter()
+        .find(|item| item.key == provider)
+        .map(|item| (item.display_name, item.key))
+}
+
+// Owned names let the picker follow the API's quota names without leaking
+// strings or limiting selection to the built-in static catalogue.
+pub(super) fn text_template_choice(
+    expression: &str,
+    context: &DataContext,
+    language: LanguageId,
+) -> Option<TextTemplateChoice> {
+    if let Some(value) = text_template_value(expression) {
+        return Some(TextTemplateChoice {
+            group: value.group,
+            label: language.text(value.label).into(),
+            expression: expression.into(),
+            kind: value.kind,
+        });
+    }
+    let (group, _) = limit_provider(expression)?;
+    let (base, label, kind) = [
+        (".percentage", "Used", TextTemplateValueKind::Percentage),
+        (".remaining", "Remaining", TextTemplateValueKind::Percentage),
+        (
+            ".display",
+            "Shown",
+            TextTemplateValueKind::DisplayPercentage,
+        ),
+        (".label", "Label", TextTemplateValueKind::Text),
+        (".available", "Available", TextTemplateValueKind::Number),
+        (".is_active", "Active limit", TextTemplateValueKind::Number),
+        (
+            ".reset.seconds",
+            "Reset countdown",
+            TextTemplateValueKind::Duration,
+        ),
+        (
+            ".reset.unix",
+            "Reset date and time",
+            TextTemplateValueKind::Timestamp,
+        ),
+    ]
+    .into_iter()
+    .find_map(|(suffix, label, kind)| {
+        expression
+            .strip_suffix(suffix)
+            .map(|base| (base, label, kind))
+    })
+    .unwrap_or((expression, "Summary", TextTemplateValueKind::UsageSummary));
+    if !is_limit_base(base) || context.get(&format!("{base}.available")).is_none() {
+        return None;
+    }
+    let mut name = limit_display_name(base, context);
+    if let Some(account) = base.strip_prefix("accounts.").and_then(|path| {
+        let (provider, rest) = path.split_once('.')?;
+        let (id, _) = rest.split_once('.')?;
+        Some((format!("accounts.{provider}.{id}.name"), id))
+    }) {
+        let account_name = context
+            .get_string(&account.0)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(account.1);
+        name = format!("{account_name}: {name}");
+    }
+    Some(TextTemplateChoice {
+        group,
+        label: format!("{name} — {}", language.text(label)),
+        expression: expression.into(),
+        kind,
+    })
+}
+
+/// Whether `base` names a reported quota, such as `claude.limits.<key>`.
+pub(super) fn is_limit_base(base: &str) -> bool {
+    base.contains(".limits.") || base.contains(".model.") || base.ends_with(".scoped")
+}
+
+/// The quota's reported label, or its key when the API sent none.
+pub(super) fn limit_display_name(base: &str, context: &DataContext) -> String {
+    let name = context
+        .get_string(&format!("{base}.label"))
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| base.rsplit('.').next().unwrap_or(base).replace('_', " "));
+    let mut chars = name.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+        .unwrap_or_default()
+}
+
+pub(super) fn text_template_choices(
+    context: &DataContext,
+    language: LanguageId,
+) -> Vec<TextTemplateChoice> {
+    let mut result = Vec::new();
+    for (index, value) in TEXT_TEMPLATE_VALUES.iter().enumerate() {
+        result.push(text_template_choice(value.expression, context, language).unwrap());
+        if TEXT_TEMPLATE_VALUES
+            .get(index + 1)
+            .is_some_and(|next| next.group == value.group)
+        {
+            continue;
+        }
+        // List each reported quota once using its canonical binding. Model
+        // aliases remain available in the expression editor.
+        for base in context
+            .limit_variables()
+            .into_iter()
+            .filter(|name| name.contains(".limits."))
+            .filter_map(|name| name.strip_suffix(".available"))
+            .filter(|base| limit_provider(base).is_some_and(|(group, _)| group == value.group))
+        {
+            for suffix in [
+                "",
+                ".label",
+                ".percentage",
+                ".remaining",
+                ".display",
+                ".reset.seconds",
+                ".reset.unix",
+                ".available",
+                ".is_active",
+            ] {
+                if let Some(choice) =
+                    text_template_choice(&format!("{base}{suffix}"), context, language)
+                {
+                    result.push(choice);
+                }
+            }
+        }
+    }
+    result
+}
+
 pub(super) fn text_template_formats(kind: TextTemplateValueKind) -> &'static [TextTemplateFormat] {
     use TextTemplateFormat as Format;
     match kind {
@@ -429,6 +778,15 @@ pub(super) fn text_template_formats(kind: TextTemplateValueKind) -> &'static [Te
             Format::OneDecimal,
             Format::TwoDecimals,
             Format::Automatic,
+        ],
+        TextTemplateValueKind::DisplayPercentage => &[
+            Format::Percentage,
+            Format::WholeNumber,
+            Format::OneDecimal,
+            Format::TwoDecimals,
+            Format::Automatic,
+            Format::UsageLine,
+            Format::UsageBadge,
         ],
         TextTemplateValueKind::Duration => &[
             Format::ShortDuration,
@@ -592,690 +950,9 @@ pub(super) fn append_expression_token(draft: &mut String, token: &str) {
 }
 
 pub(super) fn text_template_value_sample(
-    value: TextTemplateValue,
+    value: &TextTemplateChoice,
     format: TextTemplateFormat,
     context: &DataContext,
 ) -> String {
-    theme_engine::format_template(&text_template_token(value.expression, format), context)
-}
-
-pub(super) fn text_template_values_panel(
-    ui: &mut egui::Ui,
-    size: egui::Vec2,
-    context: &DataContext,
-    filter: &mut String,
-    selected_value: &mut &'static str,
-    selected_format: &mut TextTemplateFormat,
-    language: LanguageId,
-) {
-    expression_reference_card(ui, size.x, size.y, language.text("Provider values"), |ui| {
-        ui.add(
-            singleline_text_edit(filter)
-                .desired_width(ui.available_width())
-                .hint_text(language.text("Search values...")),
-        );
-        ui.add_space(4.0);
-        let needle = filter.trim().to_ascii_lowercase();
-        egui::ScrollArea::vertical()
-            .id_salt("text-template-values")
-            .auto_shrink([false, false])
-            .content_margin(egui::Margin {
-                right: 12,
-                ..egui::Margin::ZERO
-            })
-            .max_height((size.y - 72.0).max(80.0))
-            .show(ui, |ui| {
-                let mut last_group = "";
-                for value in TEXT_TEMPLATE_VALUES.iter().copied().filter(|value| {
-                    needle.is_empty()
-                        || value.label.to_ascii_lowercase().contains(&needle)
-                        || language.text(value.label).to_lowercase().contains(&needle)
-                        || value.group.to_ascii_lowercase().contains(&needle)
-                        || language.text(value.group).to_lowercase().contains(&needle)
-                        || value.expression.to_ascii_lowercase().contains(&needle)
-                }) {
-                    if value.group != last_group {
-                        if !last_group.is_empty() {
-                            ui.add_space(6.0);
-                        }
-                        ui.label(
-                            egui::RichText::new(language.text(value.group))
-                                .small()
-                                .strong()
-                                .color(muted()),
-                        );
-                        last_group = value.group;
-                    }
-                    ui.horizontal(|ui| {
-                        let is_selected = *selected_value == value.expression;
-                        if ui
-                            .add(
-                                egui::Button::selectable(is_selected, language.text(value.label))
-                                    .frame(false),
-                            )
-                            .on_hover_text(value.expression)
-                            .clicked()
-                        {
-                            *selected_value = value.expression;
-                            *selected_format = default_text_template_format(value.kind);
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let sample = text_template_value_sample(
-                                value,
-                                default_text_template_format(value.kind),
-                                context,
-                            );
-                            ui.label(egui::RichText::new(sample).color(muted()));
-                        });
-                    });
-                }
-            });
-    });
-}
-
-pub(super) fn text_template_formats_panel(
-    ui: &mut egui::Ui,
-    size: egui::Vec2,
-    context: &DataContext,
-    selected_value: &str,
-    selected_format: &mut TextTemplateFormat,
-    draft: &mut String,
-    language: LanguageId,
-) {
-    expression_reference_card(ui, size.x, size.y, language.text("Format"), |ui| {
-        let value = text_template_value(selected_value).unwrap_or(TEXT_TEMPLATE_VALUES[0]);
-        ui.label(egui::RichText::new(language.text(value.label)).strong());
-        ui.label(
-            egui::RichText::new(value.expression)
-                .small()
-                .family(egui::FontFamily::Monospace)
-                .color(muted()),
-        );
-        ui.add_space(8.0);
-        for format in text_template_formats(value.kind) {
-            let sample = text_template_value_sample(value, *format, context);
-            ui.horizontal(|ui| {
-                if ui
-                    .add(
-                        egui::Button::selectable(
-                            *selected_format == *format,
-                            text_template_format_label(language, *format),
-                        )
-                        .frame(false),
-                    )
-                    .clicked()
-                {
-                    *selected_format = *format;
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(sample).color(muted()));
-                });
-            });
-        }
-        ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(8.0);
-        let token = text_template_token(value.expression, *selected_format);
-        ui.label(
-            egui::RichText::new(&token)
-                .small()
-                .color(muted())
-                .monospace(),
-        );
-        ui.add_space(6.0);
-        if ui
-            .add_sized(
-                [ui.available_width(), CONTROL_HEIGHT],
-                lucide_labeled_button(LucideIcon::Code, language.text("Insert value")),
-            )
-            .clicked()
-        {
-            draft.push_str(&token);
-        }
-    });
-}
-
-pub(super) fn text_template_guide_panel(
-    ui: &mut egui::Ui,
-    width: f32,
-    height: f32,
-    language: LanguageId,
-) {
-    expression_reference_card(ui, width, height, language.text("Guide"), |ui| {
-        ui.label(language.text("Type ordinary words directly in the editor."));
-        ui.add_space(8.0);
-        ui.label(language.text("Select a provider value, choose its format, then insert it."));
-        ui.add_space(8.0);
-        ui.label(language.text("Values are inserted at the end of the current text and can be moved or edited afterwards."));
-        ui.add_space(8.0);
-        ui.label(language.text("To show a literal opening brace, type:"));
-        ui.label(egui::RichText::new("{{").monospace().color(muted()));
-        ui.add_space(8.0);
-        ui.label(language.text("Advanced expressions are supported inside a value token."));
-    });
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn action_reference_panels(
-    ui: &mut egui::Ui,
-    height: f32,
-    targets: &[(String, String)],
-    self_id: &str,
-    target: &mut String,
-    property: &mut MouseActionProperty,
-    value: &mut String,
-    url: &mut String,
-    context_menus: &[context_menu::ContextMenuDescriptor],
-    context_menu_reference: &mut String,
-    draft: &mut String,
-    language: LanguageId,
-) {
-    let gap = ui.spacing().item_spacing.x;
-    let panel_width = ((ui.available_width() - gap * 2.0) / 3.0).max(1.0);
-    ui.horizontal(|ui| {
-        expression_reference_card(ui, panel_width, height, language.text("Actions"), |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt("action-helper-actions")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    if ui.button(language.text("Show dashboard")).clicked() {
-                        append_action(draft, "show_dashboard()");
-                    }
-                    if ui.button(language.text("Toggle dashboard")).clicked() {
-                        append_action(draft, "toggle_dashboard()");
-                    }
-                    ui.label(
-                        egui::RichText::new(language.text("URL"))
-                            .small()
-                            .color(muted()),
-                    );
-                    ui.add(
-                        singleline_text_edit(url)
-                            .desired_width(ui.available_width())
-                            .hint_text("https://example.com/usage"),
-                    );
-                    if ui
-                        .add_enabled(
-                            context_menu::supported_url(url),
-                            egui::Button::new(language.text("Open URL")),
-                        )
-                        .on_disabled_hover_text(
-                            language.text("Only http and https links are allowed."),
-                        )
-                        .clicked()
-                    {
-                        let url = url.replace('\\', "\\\\").replace('"', "\\\"");
-                        append_action(draft, &format!("open_url(\"{url}\")"));
-                    }
-                    ui.label(
-                        egui::RichText::new(language.text("Context menu"))
-                            .small()
-                            .color(muted()),
-                    );
-                    Dropdown::from_id_salt("action-helper-context-menu")
-                        .width(ui.available_width())
-                        .selected_text(
-                            context_menus
-                                .iter()
-                                .find(|menu| menu.id == *context_menu_reference)
-                                .map(|menu| menu.name.as_str())
-                                .unwrap_or(context_menu_reference.as_str()),
-                        )
-                        .show_ui(ui, |ui| {
-                            for menu in context_menus {
-                                dropdown_selectable_value(
-                                    ui,
-                                    context_menu_reference,
-                                    menu.id.clone(),
-                                    &menu.name,
-                                );
-                            }
-                        });
-                    if ui.button(language.text("Show context menu")).clicked() {
-                        let reference = context_menu_reference
-                            .replace('\\', "\\\\")
-                            .replace('"', "\\\"");
-                        append_action(draft, &format!("show_context_menu(\"{reference}\")"));
-                    }
-                    ui.separator();
-                    if ui.button(language.text("Set property")).clicked() {
-                        append_action(
-                            draft,
-                            &format!("set({target}, {}, {})", property.name(), value.trim()),
-                        );
-                    }
-                    if ui
-                        .add_enabled(
-                            *property == MouseActionProperty::Render,
-                            egui::Button::new(language.text("Toggle property")),
-                        )
-                        .on_disabled_hover_text(
-                            language.text("Toggle currently supports Render only"),
-                        )
-                        .clicked()
-                    {
-                        append_action(draft, &format!("toggle({target}, {})", property.name()));
-                    }
-                    if ui.button(language.text("Reset property")).clicked() {
-                        append_action(draft, &format!("reset({target}, {})", property.name()));
-                    }
-                    let numeric_property = *property != MouseActionProperty::Render;
-                    if ui
-                        .add_enabled(
-                            numeric_property,
-                            egui::Button::new(language.text("Increase value")),
-                        )
-                        .on_disabled_hover_text(language.text("Choose a numeric property"))
-                        .clicked()
-                    {
-                        append_action(
-                            draft,
-                            &format!("increase({target}, {}, {})", property.name(), value.trim()),
-                        );
-                    }
-                    if ui
-                        .add_enabled(
-                            numeric_property,
-                            egui::Button::new(language.text("Decrease value")),
-                        )
-                        .on_disabled_hover_text(language.text("Choose a numeric property"))
-                        .clicked()
-                    {
-                        append_action(
-                            draft,
-                            &format!("decrease({target}, {}, {})", property.name(), value.trim()),
-                        );
-                    }
-                    ui.add_space(10.0);
-                    ui.label(
-                        egui::RichText::new(
-                            language.text("Actions run from top to bottom in one update."),
-                        )
-                        .small()
-                        .color(muted()),
-                    );
-                });
-        });
-        expression_reference_card(ui, panel_width, height, language.text("Layers"), |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt("action-helper-layers")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    for (id, name) in targets {
-                        let token = if id.eq_ignore_ascii_case(self_id) {
-                            "self".to_string()
-                        } else {
-                            format!("\"{}\"", id.replace('\\', "\\\\").replace('"', "\\\""))
-                        };
-                        let label = if token == "self" {
-                            format!("{} ({})", language.text("Self"), name)
-                        } else {
-                            format!("{name}  ·  {id}")
-                        };
-                        if ui.selectable_label(*target == token, label).clicked() {
-                            *target = token;
-                        }
-                    }
-                });
-        });
-        expression_reference_card(ui, panel_width, height, language.text("Properties"), |ui| {
-            for candidate in MouseActionProperty::ALL {
-                let label = match candidate {
-                    MouseActionProperty::Render => language.text("Render"),
-                    MouseActionProperty::Visibility => language.text("Visibility"),
-                    MouseActionProperty::X => language.text("X"),
-                    MouseActionProperty::Y => language.text("Y"),
-                    MouseActionProperty::Width => language.text("Width"),
-                    MouseActionProperty::Height => language.text("Height"),
-                    MouseActionProperty::Rotation => language.text("Rotation"),
-                };
-                if ui.selectable_label(*property == candidate, label).clicked() {
-                    *property = candidate;
-                }
-            }
-            ui.separator();
-            ui.label(
-                egui::RichText::new(language.text("Value expression"))
-                    .small()
-                    .color(muted()),
-            );
-            ui.add(
-                singleline_text_edit(value)
-                    .desired_width(ui.available_width())
-                    .hint_text(language.text("e.g. false, 120, parent.width / 2")),
-            );
-            ui.add_space(8.0);
-            ui.label(
-                egui::RichText::new(
-                    language.text(
-                        "Reset removes the runtime override and restores the saved expression.",
-                    ),
-                )
-                .small()
-                .color(muted()),
-            );
-        });
-    });
-}
-
-pub(super) fn append_action(draft: &mut String, action: &str) {
-    if !draft.trim().is_empty() && !draft.ends_with('\n') {
-        draft.push('\n');
-    }
-    draft.push_str(action);
-}
-
-pub(super) fn expression_variables_panel(
-    ui: &mut egui::Ui,
-    width: f32,
-    height: f32,
-    context: &DataContext,
-    filter: &mut String,
-    draft: &mut String,
-    language: LanguageId,
-) {
-    expression_reference_card(ui, width, height, language.text("Variables"), |ui| {
-        ui.add(
-            singleline_text_edit(filter)
-                .desired_width(ui.available_width())
-                .hint_text(language.text("Search variables...")),
-        );
-        ui.add_space(4.0);
-        let needle = filter.trim().to_ascii_lowercase();
-        egui::ScrollArea::vertical()
-            .id_salt("expression-variables")
-            .auto_shrink([false, false])
-            .content_margin(egui::Margin {
-                right: 12,
-                ..egui::Margin::ZERO
-            })
-            .max_height((height - 72.0).max(80.0))
-            .show(ui, |ui| {
-                let basic = ["true", "false", "pi", "e"];
-                expression_variable_group(
-                    ui,
-                    language.text("Constants"),
-                    &basic,
-                    &needle,
-                    context,
-                    draft,
-                    language,
-                );
-                let layout = [
-                    "canvas.width",
-                    "canvas.height",
-                    "parent.width",
-                    "parent.height",
-                    "host.width",
-                    "host.height",
-                ];
-                expression_variable_group(
-                    ui,
-                    language.text("Layout"),
-                    &layout,
-                    &needle,
-                    context,
-                    draft,
-                    language,
-                );
-                let date_time = [
-                    "time.now.unix",
-                    "time.now.milliseconds",
-                    "time.local.year",
-                    "time.local.month",
-                    "time.local.day",
-                    "time.local.weekday",
-                    "time.local.hour",
-                    "time.local.minute",
-                    "time.local.second",
-                    "time.utc.year",
-                    "time.utc.month",
-                    "time.utc.day",
-                    "time.utc.weekday",
-                    "time.utc.hour",
-                    "time.utc.minute",
-                    "time.utc.second",
-                ];
-                expression_variable_group(
-                    ui,
-                    language.text("Date and time"),
-                    &date_time,
-                    &needle,
-                    context,
-                    draft,
-                    language,
-                );
-                let mut providers = vec!["providers.count".to_string()];
-                providers.extend(
-                    PROVIDER_DESCRIPTORS
-                        .iter()
-                        .map(|descriptor| format!("providers.{}.enabled", descriptor.key)),
-                );
-                let providers: Vec<&str> = providers.iter().map(String::as_str).collect();
-                expression_variable_group(
-                    ui,
-                    language.text("Providers"),
-                    &providers,
-                    &needle,
-                    context,
-                    draft,
-                    language,
-                );
-                let application = [
-                    "app.version.major",
-                    "app.version.minor",
-                    "app.version.patch",
-                ];
-                expression_variable_group(
-                    ui,
-                    language.text("Application"),
-                    &application,
-                    &needle,
-                    context,
-                    draft,
-                    language,
-                );
-                for (title, provider) in std::iter::once(("Active provider", "active")).chain(
-                    PROVIDER_DESCRIPTORS
-                        .iter()
-                        .map(|descriptor| (descriptor.display_name, descriptor.key)),
-                ) {
-                    let mut names = vec![format!("{provider}.available")];
-                    let windows = if matches!(provider, "active" | "codex") {
-                        &["session", "five_hour", "weekly"][..]
-                    } else {
-                        &["session", "weekly"][..]
-                    };
-                    for window in windows {
-                        for metric in ["percentage", "remaining"] {
-                            names.push(format!("{provider}.{window}.{metric}"));
-                        }
-                        for unit in ["unix", "seconds", "minutes", "hours", "days"] {
-                            names.push(format!("{provider}.{window}.reset.{unit}"));
-                        }
-                    }
-                    let names: Vec<&str> = names.iter().map(String::as_str).collect();
-                    expression_variable_group(
-                        ui,
-                        language.text(title),
-                        &names,
-                        &needle,
-                        context,
-                        draft,
-                        language,
-                    );
-                }
-            });
-    });
-}
-
-pub(super) fn expression_variable_group(
-    ui: &mut egui::Ui,
-    title: &str,
-    names: &[&str],
-    needle: &str,
-    context: &DataContext,
-    draft: &mut String,
-    language: LanguageId,
-) {
-    let matches: Vec<&str> = names
-        .iter()
-        .copied()
-        .filter(|name| needle.is_empty() || name.to_ascii_lowercase().contains(needle))
-        .collect();
-    if matches.is_empty() {
-        return;
-    }
-    ui.label(egui::RichText::new(title).small().strong().color(muted()));
-    for name in matches {
-        ui.horizontal(|ui| {
-            if ui
-                .add(egui::Button::selectable(false, name).frame(false))
-                .on_hover_text(language.text("Insert variable"))
-                .clicked()
-            {
-                append_expression_token(draft, name);
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let value = context
-                    .get(name)
-                    .map(format_number_for_ui)
-                    .unwrap_or_else(|| "—".into());
-                ui.label(egui::RichText::new(value).color(muted()));
-            });
-        });
-    }
-    ui.add_space(6.0);
-}
-
-pub(super) fn expression_functions_panel(
-    ui: &mut egui::Ui,
-    width: f32,
-    height: f32,
-    filter: &mut String,
-    draft: &mut String,
-    language: LanguageId,
-) {
-    expression_reference_card(ui, width, height, language.text("Functions"), |ui| {
-        ui.add(
-            singleline_text_edit(filter)
-                .desired_width(ui.available_width())
-                .hint_text(language.text("Search functions...")),
-        );
-        ui.add_space(4.0);
-        let needle = filter.trim().to_ascii_lowercase();
-        egui::ScrollArea::vertical()
-            .id_salt("expression-functions")
-            .auto_shrink([false, false])
-            .max_height((height - 72.0).max(80.0))
-            .show(ui, |ui| {
-                for (name, signature, insertion, detail) in [
-                    (
-                        "get",
-                        "get(this, property)",
-                        "get(this, gap)",
-                        "Value expression",
-                    ),
-                    ("min", "min(a, b)", "min(0, 0)", "Smaller value"),
-                    ("max", "max(a, b)", "max(0, 0)", "Larger value"),
-                    (
-                        "clamp",
-                        "clamp(value, min, max)",
-                        "clamp(0, 0, 100)",
-                        "Constrain a value",
-                    ),
-                    ("round", "round(value)", "round(0)", "Nearest integer"),
-                    ("floor", "floor(value)", "floor(0)", "Round down"),
-                    ("ceil", "ceil(value)", "ceil(0)", "Round up"),
-                    ("abs", "abs(value)", "abs(0)", "Absolute value"),
-                    ("sqrt", "sqrt(value)", "sqrt(0)", "Square root"),
-                    ("pow", "pow(base, power)", "pow(0, 2)", "Exponent"),
-                    (
-                        "if",
-                        "if(condition, yes, no)",
-                        "if(true, 1, 0)",
-                        "Conditional value",
-                    ),
-                    (
-                        "lerp",
-                        "lerp(start, end, amount)",
-                        "lerp(0, 100, 0.5)",
-                        "Linear interpolation",
-                    ),
-                ] {
-                    if !needle.is_empty()
-                        && !name.contains(&needle)
-                        && !detail.to_ascii_lowercase().contains(&needle)
-                    {
-                        continue;
-                    }
-                    if ui
-                        .add(
-                            egui::Button::selectable(false, signature)
-                                .frame(false)
-                                .wrap(),
-                        )
-                        .on_hover_text(language.text(detail))
-                        .clicked()
-                    {
-                        append_expression_token(draft, insertion);
-                    }
-                }
-            });
-    });
-}
-
-pub(super) fn expression_operators_panel(
-    ui: &mut egui::Ui,
-    width: f32,
-    height: f32,
-    draft: &mut String,
-    language: LanguageId,
-) {
-    expression_reference_card(ui, width, height, language.text("Operators"), |ui| {
-        egui::ScrollArea::vertical()
-            .id_salt("expression-operators")
-            .auto_shrink([false, false])
-            .max_height((height - 38.0).max(80.0))
-            .show(ui, |ui| {
-                for (operator, insertion, detail) in [
-                    ("&&", "&&", "And"),
-                    ("||", "||", "Or"),
-                    ("!", "!", "Not"),
-                    ("==", "==", "Equal"),
-                    ("!=", "!=", "Not equal"),
-                    (">", ">", "Greater than"),
-                    ("<", "<", "Less than"),
-                    (">=", ">=", "Greater or equal"),
-                    ("<=", "<=", "Less or equal"),
-                    ("+", "+", "Add"),
-                    ("-", "-", "Subtract"),
-                    ("*", "*", "Multiply"),
-                    ("/", "/", "Divide"),
-                    ("%", "%", "Remainder"),
-                    ("( )", "()", "Grouping"),
-                ] {
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_sized(
-                                [44.0, CONTROL_HEIGHT],
-                                egui::Button::new(
-                                    egui::RichText::new(operator)
-                                        .family(egui::FontFamily::Monospace),
-                                ),
-                            )
-                            .on_hover_text(language.text("Insert operator"))
-                            .clicked()
-                        {
-                            append_expression_token(draft, insertion);
-                        }
-                        ui.label(
-                            egui::RichText::new(language.text(detail))
-                                .small()
-                                .color(muted()),
-                        );
-                    });
-                }
-            });
-    });
+    theme_engine::format_template(&text_template_token(&value.expression, format), context)
 }

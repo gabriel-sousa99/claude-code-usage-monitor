@@ -1,6 +1,6 @@
 [package]
 name = "claude-code-usage-monitor"
-version = "2.10.23"
+version = "2.22.4"
 edition = "2021"
 rust-version = "1.95"
 license = "MIT"
@@ -8,7 +8,7 @@ description = "Claude Code Usage Monitor"
 homepage = "https://codezeno.com.au"
 repository = "https://github.com/CodeZeno/Claude-Code-Usage-Monitor"
 
-[package.metadata.winres]
+[package.metadata.winresource]
 CompanyName = "Code Zeno Pty Ltd"
 ProductName = "Claude Code Usage Monitor"
 FileDescription = "Claude Code Usage Monitor"
@@ -18,16 +18,21 @@ Comments = "https://codezeno.com.au"
 LegalCopyright = "Copyright (C) 2026 Code Zeno Pty Ltd"
 
 [dependencies]
-ureq = { version = "3.4", default-features = false, features = ["native-tls", "json"] }
+# ureq 3.5 fixes native-tls-no-default connector gating (algesten/ureq#1204).
+# Both agents use PlatformVerifier and the Windows store without bundled roots.
+ureq = { version = "3.5", default-features = false, features = ["native-tls-no-default", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-dirs = "6"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
+semver = "1"
+httpdate = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 eframe = { version = "0.36", default-features = false, features = ["glow"] }
-egui_extras = { version = "0.36", features = ["svg"] }
 lucide-icons = "1.30"
 raw-window-handle = "0.6"
-zip = { version = "8.6", default-features = false, features = ["deflate"] }
+egui-directx11 = { version = "=0.13.0", path = "vendor/egui-directx11" }
+egui-winit = { version = "0.36", default-features = false, features = ["clipboard"] }
+winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
+zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dependencies.windows]
 version = "0.62"
@@ -36,6 +41,8 @@ features = [
     "Win32_Globalization",
     "Win32_Graphics_Gdi",
     "Win32_System_LibraryLoader",
+    "Win32_System_Com",
+    "Win32_System_Diagnostics_Debug",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Accessibility",
@@ -43,9 +50,9 @@ features = [
     "Win32_System_Time",
     "Win32_System_Threading",
     "Win32_Security",
+    "Win32_Security_Cryptography",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_HiDpi",
-    "Win32_UI_Controls",
     "Win32_UI_Controls_Dialogs",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Direct3D",
@@ -56,14 +63,22 @@ features = [
     "Win32_Storage_FileSystem",
 ]
 
+[dev-dependencies]
+tempfile = "3"
+
 [build-dependencies]
 epaint_default_fonts = "0.36"
 heck = "0.5"
 lucide-icons = "1.30"
 oxifont-subset = "0.2.2"
 proc-macro2 = "1"
+serde_json = "1"
 toml = "1.1"
-winres = "0.1"
+winresource = "0.1.31"
+
+[patch.crates-io]
+# Keep native text copy/paste without arboard's image codecs. See vendor/egui-winit/PATCH.md.
+egui-winit = { path = "vendor/egui-winit" }
 
 [profile.release]
 opt-level = "z"

@@ -1,4 +1,209 @@
+fn classic_theme() -> ThemeDocument {
+    let source = BUILTIN_THEME_SOURCES
+        .iter()
+        .find(|(id, _)| *id == CLASSIC_THEME_ID)
+        .unwrap()
+        .1;
+    let mut theme: ThemeDocument = serde_json::from_str(source).unwrap();
+    theme.prepare_runtime();
+    theme
+}
+
 use super::*;
+
+#[test]
+fn account_bindings_validate_without_live_credentials_or_usage() {
+    let mut theme = classic_theme();
+    theme.id = "account-validation-test".into();
+    theme.surfaces[0].render = Expression("accounts.codex.account_1.available".into());
+    let text = theme.surfaces[0]
+        .children
+        .iter_mut()
+        .find_map(|object| {
+            if let SceneContent::Text { template, .. } = &mut object.content {
+                Some(template)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    *text = "{accounts.codex.account_1.name} {codex.account.name} {accounts.claude.work.weekly.percentage:0}%".into();
+    let errors = theme.validate();
+    assert!(errors.is_empty(), "{errors:?}");
+    let json = serde_json::to_string(&theme).unwrap();
+    let reloaded: ThemeDocument = serde_json::from_str(&json).unwrap();
+    assert!(reloaded.validate().is_empty());
+
+    let context = DataContext::from_usage(None, &Canvas::default());
+    assert_eq!(context.get("accounts.codex.account_1.available"), Some(0.0));
+    assert_eq!(
+        format_template("{accounts.codex.account_1.weekly:usage_line}", &context),
+        "--"
+    );
+    assert_eq!(
+        format_template(
+            "{accounts.codex.account_1.name}/{codex.account.name}",
+            &context
+        ),
+        "/"
+    );
+    for invalid in [
+        "accounts.codex.work.weekly.percentge",
+        "accounts.cursor.work.weekly.percentage",
+        "accounts.codex..available",
+    ] {
+        assert!(evaluate(invalid, &context).is_err(), "{invalid}");
+    }
+}
+
+#[test]
+fn normalized_account_ids_keep_theme_values_independent() {
+    use crate::accounts::{AccountProfile, ProviderAccounts};
+    use crate::models::{AccountUsage, UsageData, UsageSection};
+    let mut configured = ProviderAccounts {
+        profiles: ["Work", "work"]
+            .into_iter()
+            .map(|id| AccountProfile {
+                id: id.into(),
+                name: id.into(),
+                config_dir: format!("C:/review/{id}"),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    configured.normalize();
+    let mut data = AppUsageData::default();
+    for (profile, percentage) in configured.profiles.iter().cloned().zip([25.0, 80.0]) {
+        data.accounts.push(AccountUsage {
+            provider: ProviderId::Codex,
+            profile,
+            source_signature: "fixture".into(),
+            source_path: None,
+            selected: false,
+            error: None,
+            usage: Some(UsageData {
+                weekly: UsageSection {
+                    available: true,
+                    percentage,
+                    resets_at: None,
+                },
+                ..Default::default()
+            }),
+        });
+    }
+    let context = DataContext::from_usage(Some(&data), &Canvas::default());
+    for (profile, expected) in configured.profiles.iter().zip([25.0, 80.0]) {
+        assert_eq!(
+            context.get(&format!("accounts.codex.{}.weekly.percentage", profile.id)),
+            Some(expected)
+        );
+    }
+    // Removal and startup use the same typed defaults, including countdown.
+    let empty = DataContext::from_usage_with_runtime(
+        None,
+        &Canvas::default(),
+        ThemeRuntime::default().with_countdown(true),
+    );
+    assert_eq!(empty.get("accounts.codex.Work.weekly.display"), Some(100.0));
+    assert_eq!(empty.get_string("accounts.codex.Work.name"), Some(""));
+}
+
+#[test]
+fn named_account_bindings_show_independent_usage_and_errors() {
+    use crate::accounts::{AccountProfile, AccountSettings};
+    use crate::models::{AccountUsage, UsageData, UsageSection};
+    let personal = AccountProfile {
+        id: "personal".into(),
+        name: "Personal".into(),
+        config_dir: "C:\\personal".into(),
+        ..Default::default()
+    };
+    let work = AccountProfile {
+        id: "work".into(),
+        name: "Work".into(),
+        config_dir: "C:\\work".into(),
+        ..Default::default()
+    };
+    let mut settings = AccountSettings::default();
+    settings.codex.profiles = vec![personal.clone(), work.clone()];
+    settings.codex.selected = "work".into();
+    let mut data = AppUsageData::default();
+    data.accounts = vec![
+        AccountUsage {
+            provider: ProviderId::Codex,
+            profile: personal,
+            source_signature: "fixture".into(),
+            source_path: None,
+            selected: false,
+            usage: Some(UsageData {
+                weekly: UsageSection {
+                    available: true,
+                    percentage: 25.0,
+                    resets_at: None,
+                },
+                ..Default::default()
+            }),
+            error: None,
+        },
+        AccountUsage {
+            provider: ProviderId::Codex,
+            profile: work,
+            source_signature: "fixture".into(),
+            source_path: None,
+            selected: false,
+            usage: None,
+            error: Some(crate::poller::PollError::AuthRequired),
+        },
+    ];
+    data.select_accounts(&settings);
+    let context = DataContext::from_usage_with_runtime(
+        Some(&data),
+        &Canvas::default(),
+        ThemeRuntime::default()
+            .with_poll_state(false, true)
+            .with_countdown(true),
+    );
+    assert_eq!(format_template("{codex.account.name}", &context), "Work");
+    assert_eq!(
+        format_template("{accounts.codex.personal.name}", &context),
+        "Personal"
+    );
+    assert_eq!(
+        format_template(
+            "{accounts.codex.personal.weekly.display:usage_line}",
+            &context
+        ),
+        "75%"
+    );
+    assert_eq!(
+        format_template("{accounts.codex.work.weekly:usage_badge}", &context),
+        "!"
+    );
+    assert_eq!(format_template("{codex.weekly:usage_badge}", &context), "!");
+    assert_eq!(
+        evaluate("accounts.codex.personal.weekly.percentage", &context).unwrap(),
+        25.0
+    );
+    assert_eq!(
+        evaluate("accounts.codex.work.selected", &context).unwrap(),
+        1.0
+    );
+    assert!(
+        !data.is_empty(),
+        "a healthy unselected account still has usable data"
+    );
+    data.accounts[1].error = None;
+    let waiting = DataContext::from_usage_with_runtime(
+        Some(&data),
+        &Canvas::default(),
+        ThemeRuntime::default().with_poll_state(true, false),
+    );
+    assert_eq!(
+        format_template("{accounts.codex.work.weekly:usage_badge}", &waiting),
+        "--"
+    );
+}
 
 #[test]
 fn managed_asset_paths_stay_inside_the_asset_directory() {
@@ -11,7 +216,7 @@ fn managed_asset_paths_stay_inside_the_asset_directory() {
 
 #[test]
 fn theme_asset_usage_includes_roots_and_child_layers() {
-    let mut theme = ThemeDocument::starter();
+    let mut theme = classic_theme();
     let path = "assets/logo.png".to_string();
     theme.surfaces[0].background = LayerBackground::Image {
         path: path.clone(),
@@ -27,7 +232,7 @@ fn theme_asset_usage_includes_roots_and_child_layers() {
 
 #[test]
 fn removing_an_asset_clears_root_and_child_layer_references() {
-    let mut theme = ThemeDocument::starter();
+    let mut theme = classic_theme();
     let path = "assets/logo.png";
     theme.surfaces[0].background = LayerBackground::Image {
         path: path.into(),
@@ -238,7 +443,7 @@ fn expressions_support_data_math_and_functions() {
 
 #[test]
 fn layer_width_can_get_its_own_resolved_gap() {
-    let mut theme = ThemeDocument::starter();
+    let mut theme = classic_theme();
     let surface = &mut theme.surfaces[0];
     let mut row = SceneObject::object("days", "Days");
     row.gap = 4.0.into();
@@ -271,7 +476,7 @@ fn layer_width_can_get_its_own_resolved_gap() {
 
 #[test]
 fn host_dimensions_are_available_to_root_size_expressions() {
-    let mut theme = ThemeDocument::starter();
+    let mut theme = classic_theme();
     theme.surfaces[0].width = Expression("host.width".into());
     theme.surfaces[0].height = Expression("min(46, host.height)".into());
     let runtime = ThemeRuntime::default().with_host_dimensions(220, 30);
@@ -291,7 +496,102 @@ fn templates_apply_numeric_character_formats() {
         format_template("Used {claude.session.percentage:0.0}%", &context),
         "Used 73.5%"
     );
-    assert_eq!(format_template("{reset:duration_short}", &context), "4d");
+    assert_eq!(format_template("{reset:duration_short}", &context), "5d");
+}
+
+#[test]
+fn duration_short_precision_scale_and_half_steps() {
+    let mut context = DataContext::default();
+    context.insert_string("i18n.day_suffix", "д");
+    context.insert_string("i18n.hour_suffix", "ч");
+    context.insert_string("i18n.minute_suffix", "м");
+    context.insert_string("i18n.second_suffix", "с");
+    context.insert_string("i18n.now", "сейчас");
+
+    let check = |secs: f64, expected: &str, ctx: &DataContext| {
+        let mut c = ctx.clone();
+        c.insert("val", secs);
+        assert_eq!(format_template("{val:duration_short}", &c), expected);
+    };
+
+    // Minutes under 1 hour (< 3600s)
+    check(3580.0, "59м", &context); // 59m 40s must clamp to 59m, never 60m
+    check(3300.0, "55м", &context);
+    check(2700.0, "45м", &context);
+    check(900.0, "15м", &context);
+    check(60.0, "1м", &context);
+
+    // Hours under 10 hours (1h .. 10h): 0.5 step rounding with dot
+    check(3600.0, "1ч", &context);
+    check(3900.0, "1ч", &context); // 1h 05m -> 1ч
+    check(5400.0, "1.5ч", &context); // 1h 30m -> 1.5ч
+    check(7800.0, "2ч", &context); // 2h 10m -> 2ч
+    check(9300.0, "2.5ч", &context); // 2h 35m -> 2.5ч
+    check(10500.0, "3ч", &context); // 2h 55m -> 3ч
+    check(34200.0, "9.5ч", &context); // 9h 30m -> 9.5ч
+
+    // Hours >= 10 hours: integer math rounding
+    check(36000.0, "10ч", &context);
+    check(43200.0, "12ч", &context);
+    check(66300.0, "18ч", &context); // 18h 25m -> 18ч
+    check(85500.0, "1д", &context); // 23h 45m -> rolls over to 1д
+
+    // Days < 10 days: 0.5 step rounding with dot
+    check(86400.0, "1д", &context);
+    check(129600.0, "1.5д", &context); // 1d 12h -> 1.5д
+    check(216000.0, "2.5д", &context); // 2d 12h -> 2.5д
+    check(532800.0, "6д", &context); // 6d 4h -> strictly 6д
+    check(565200.0, "6.5д", &context); // 6d 13h -> 6.5д
+    check(604800.0, "7д", &context); // 7d -> 7д
+
+    // Days >= 10 days: integer math rounding
+    check(892800.0, "10д", &context); // 10d 8h -> 10д
+    check(1036800.0, "12д", &context); // 12d -> 12д
+
+    // Seconds and now
+    check(45.0, "45с", &context);
+    check(0.0, "сейчас", &context);
+}
+
+#[test]
+fn duration_short_rounding_boundaries_and_extreme_values() {
+    let mut context = DataContext::default();
+    for (seconds, expected) in [
+        (-1.0, "now"),
+        (59.0, "59s"),
+        (60.0, "1m"),
+        (89.0, "1m"),
+        (90.0, "2m"),
+        (3599.0, "59m"),
+        (3600.0, "1h"),
+        (4499.0, "1h"),
+        (4500.0, "1.5h"),
+        (35099.0, "9.5h"),
+        (35100.0, "10h"),
+        (36000.0, "10h"),
+        (37799.0, "10h"),
+        (37800.0, "11h"),
+        (84599.0, "23h"),
+        (84600.0, "1d"),
+        (86399.0, "1d"),
+        (86400.0, "1d"),
+        (107999.0, "1d"),
+        (108000.0, "1.5d"),
+        (842399.0, "9.5d"),
+        (842400.0, "10d"),
+        (864000.0, "10d"),
+        (907199.0, "10d"),
+        (907200.0, "11d"),
+        (u64::MAX as f64, "213503982334601d"),
+        (f64::MAX, "213503982334601d"),
+    ] {
+        context.insert("reset", seconds);
+        assert_eq!(
+            format_template("{reset:duration_short}", &context),
+            expected,
+            "seconds = {seconds}"
+        );
+    }
 }
 
 #[test]
@@ -399,7 +699,7 @@ fn current_time_components_are_available_to_expressions() {
 
 #[test]
 fn themes_report_when_they_need_live_clock_refreshes() {
-    let mut theme = ThemeDocument::starter();
+    let mut theme = classic_theme();
     assert_eq!(theme.current_time_refresh_interval(), None);
     theme.surfaces[0].content = SceneContent::Text {
         template: "{time.now.unix:time_24}".into(),
@@ -499,7 +799,9 @@ fn usage_lines_handle_loading_errors_missing_resets_and_language() {
     let usage = AppUsageData::from_iter([(
         ProviderId::Claude,
         crate::models::UsageData {
+            limits: Vec::new(),
             session: crate::models::UsageSection {
+                available: true,
                 percentage: 25.0,
                 resets_at: None,
             },
@@ -508,6 +810,7 @@ fn usage_lines_handle_loading_errors_missing_resets_and_language() {
             monthly: None,
             credits: None,
             stale: false,
+            ..Default::default()
         },
     )]);
     let ready = DataContext::from_usage_with_runtime(
@@ -535,15 +838,15 @@ fn usage_lines_handle_loading_errors_missing_resets_and_language() {
 }
 
 #[test]
-fn starter_capsula_uses_compact_geometry() {
-    let theme = ThemeDocument::starter();
-    assert_eq!(theme.id, CAPSULA_THEME_ID);
-    assert_eq!(theme.name, "Cápsula");
+fn built_in_classic_uses_149_geometry() {
+    let theme = classic_theme();
+    assert_eq!(theme.id, CLASSIC_THEME_ID);
+    assert_eq!(theme.name, "Classic v1");
     assert_eq!(theme.validate(), Vec::<String>::new());
     for (runtime, expected_width) in [
-        (ThemeRuntime::new(true, false, false), 251),
-        (ThemeRuntime::new(true, true, false), 345),
-        (ThemeRuntime::new(true, true, true), 461),
+        (ThemeRuntime::new(true, false, false), 217),
+        (ThemeRuntime::new(true, true, false), 285),
+        (ThemeRuntime::new(true, true, true), 375),
     ] {
         assert_eq!(
             resolve_surface_size(&theme, 0, None, runtime),
@@ -553,8 +856,162 @@ fn starter_capsula_uses_compact_geometry() {
 }
 
 #[test]
+fn classic_hover_summary_survives_theme_round_trips_and_is_opt_in() {
+    let theme = classic_theme();
+    assert_eq!(
+        theme.surfaces[0].tooltip,
+        Some(SurfaceTooltip::UsageSummary)
+    );
+    let json = serde_json::to_string(&theme).unwrap();
+    let reloaded: ThemeDocument = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        reloaded.surfaces[0].tooltip,
+        Some(SurfaceTooltip::UsageSummary)
+    );
+    let legacy: SceneObject = serde_json::from_str(r#"{"id":"old","name":"Old theme"}"#).unwrap();
+    assert_eq!(legacy.tooltip, None);
+    assert!(!serde_json::to_string(&legacy).unwrap().contains("tooltip"));
+    assert!(theme
+        .surfaces
+        .iter()
+        .skip(1)
+        .all(|surface| surface.tooltip.is_none()));
+}
+
+#[test]
+fn built_in_classic_adds_a_fable_column_when_the_limit_is_available() {
+    use crate::models::{UsageData, UsageLimit, UsageSection};
+
+    let usage = AppUsageData::from_iter([(
+        ProviderId::Claude,
+        UsageData {
+            limits: vec![UsageLimit {
+                key: "weekly_scoped_fable".into(),
+                kind: "weekly_scoped".into(),
+                label: "Fable".into(),
+                model: Some("Fable".into()),
+                model_id: None,
+                scope: None,
+                is_active: true,
+                usage: UsageSection {
+                    available: true,
+                    percentage: 43.0,
+                    resets_at: None,
+                },
+            }],
+            ..Default::default()
+        },
+    )]);
+    let theme = classic_theme();
+
+    assert_eq!(
+        resolve_surface_size(
+            &theme,
+            0,
+            Some(&usage),
+            ThemeRuntime::new(true, false, false)
+        ),
+        (310, 46)
+    );
+    assert!(theme.surfaces[0]
+        .children
+        .iter()
+        .any(|object| object.id == "fable-provider"));
+}
+
+#[test]
+fn horizontal_fable_columns_follow_claude_visibility_and_usage_direction() {
+    use crate::models::{UsageData, UsageLimit, UsageSection};
+
+    let usage = AppUsageData::from_iter([(
+        ProviderId::Claude,
+        UsageData {
+            limits: vec![UsageLimit {
+                key: "weekly_scoped_fable".into(),
+                kind: "weekly_scoped".into(),
+                model: Some("Fable".into()),
+                usage: UsageSection {
+                    available: true,
+                    percentage: 43.0,
+                    resets_at: None,
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    )]);
+    for theme in [
+        classic_theme(),
+        ThemeDocument::starter(),
+        serde_json::from_str(include_str!("../themes/capsula-laranja.json")).unwrap(),
+        serde_json::from_str(include_str!("../themes/compact-fluent-quad.json")).unwrap(),
+    ] {
+        let surface = &theme.surfaces[0];
+        let fable_index = surface
+            .children
+            .iter()
+            .position(|object| object.id == "fable-provider")
+            .unwrap();
+        let disabled = ThemeRuntime::new(false, true, false);
+        assert_eq!(
+            resolve_surface_size(&theme, 0, Some(&usage), disabled),
+            resolve_surface_size(&theme, 0, None, disabled),
+            "{} must not reserve Fable space when Claude is disabled",
+            theme.name
+        );
+        assert!(
+            resolve_object_bounds_with_runtime(&theme, 0, fable_index, Some(&usage), disabled)
+                .is_none()
+        );
+        for (countdown, percentage, text) in [(false, 43.0, "Fable 43%"), (true, 57.0, "Fable 57%")]
+        {
+            let runtime = ThemeRuntime::from_providers(ProviderSet::from_enabled(ProviderId::ALL))
+                .with_countdown(countdown);
+            let (width, height) = resolve_surface_size(&theme, 0, Some(&usage), runtime);
+            let canvas = Canvas {
+                width,
+                height,
+                ..Default::default()
+            };
+            let mut context = DataContext::from_usage_with_runtime(Some(&usage), &canvas, runtime);
+            for dark in [false, true] {
+                context.insert("system.dark", dark as u8 as f64);
+                for object in surface
+                    .children
+                    .iter()
+                    .filter(|object| object.parent.as_deref() == Some("fable-provider"))
+                    .filter(|object| evaluate(&object.render.0, &context).unwrap() != 0.0)
+                {
+                    match &object.content {
+                        SceneContent::Progress { value, .. } => {
+                            assert_eq!(evaluate(&value.0, &context).unwrap(), percentage);
+                        }
+                        SceneContent::Text { template, .. } => {
+                            assert_eq!(format_template(template, &context), text);
+                        }
+                        _ => panic!("unexpected Fable content"),
+                    }
+                }
+            }
+            for (index, object) in surface.children.iter().enumerate() {
+                if object.parent.as_deref() != Some("provider-row") {
+                    continue;
+                }
+                let (x, y, w, h) =
+                    resolve_object_bounds_with_runtime(&theme, 0, index, Some(&usage), runtime)
+                        .unwrap();
+                assert!(x >= 0.0 && x + w <= width as f64, "{}", object.id);
+                assert!(y >= 0.0 && y + h <= height as f64, "{}", object.id);
+            }
+            let rendered = render_theme_surface_with_runtime(&theme, 0, Some(&usage), runtime);
+            assert!(rendered.warnings.is_empty(), "{:?}", rendered.warnings);
+        }
+    }
+}
+
+#[test]
 fn starter_theme_round_trips_and_validates() {
-    let theme = ThemeDocument::starter();
+    let theme = classic_theme();
     assert!(theme.validate().is_empty());
     let segments = theme.surfaces[0]
         .children
@@ -566,9 +1023,14 @@ fn starter_theme_round_trips_and_validates() {
         .collect::<Vec<_>>();
     // Classic contains separate light and dark progress layers so the
     // 1.4.9 palette follows the taskbar mode without runtime recolouring:
-    // five providers over two windows in two modes, plus a credit overlay on
-    // the weekly row of the two providers that report credits.
-    assert_eq!(segments, vec![10; 5 * 2 * 2 + 2 * 2]);
+    // five providers over two windows in two modes, plus Grok and Copilot,
+    // which fill only the long-window row, plus a credit overlay on that row
+    // for the three providers that report credits, plus the two eight-segment
+    // Fable layers.
+    assert_eq!(
+        segments,
+        [vec![10; 5 * 2 * 2 + 2 * 2 + 3 * 2], vec![8; 2]].concat()
+    );
     assert!(theme.surfaces[0]
         .children
         .iter()
@@ -590,7 +1052,7 @@ fn starter_theme_round_trips_and_validates() {
 
 #[test]
 fn schema_only_serializes_placement_fields_for_the_relevant_level() {
-    let mut theme = ThemeDocument::starter();
+    let mut theme = classic_theme();
     theme.surfaces[0].placement.reference = ReferenceTarget {
         region: ReferenceRegion::Monitor,
         display: 1,
@@ -621,7 +1083,7 @@ fn schema_only_serializes_placement_fields_for_the_relevant_level() {
 
 #[test]
 fn generated_studio_defaults_are_replaceable_but_named_user_themes_are_not() {
-    let mut theme = ThemeDocument::starter();
+    let mut theme = classic_theme();
     theme.id = "midnight-glass".into();
     theme.name = "Midnight Glass".into();
     assert!(theme.is_obsolete_studio_starter());
@@ -658,7 +1120,7 @@ fn theme_schema_does_not_serialize_descriptions() {
         "id": "without-description",
         "name": "Without description",
         "description": "This legacy field should be ignored",
-        "surfaces": serde_json::to_value(ThemeDocument::starter().surfaces).unwrap(),
+        "surfaces": serde_json::to_value(classic_theme().surfaces).unwrap(),
     });
     let theme: ThemeDocument = serde_json::from_value(source).unwrap();
     assert!(serde_json::to_value(theme)
@@ -673,7 +1135,9 @@ fn reset_stats_and_duration_formats_are_available_to_every_provider() {
     let usage = crate::models::AppUsageData::from_iter([(
         ProviderId::Claude,
         crate::models::UsageData {
+            limits: Vec::new(),
             session: crate::models::UsageSection {
+                available: true,
                 percentage: 25.0,
                 resets_at: Some(reset),
             },
@@ -682,6 +1146,7 @@ fn reset_stats_and_duration_formats_are_available_to_every_provider() {
             monthly: None,
             credits: None,
             stale: false,
+            ..Default::default()
         },
     )]);
     let context = DataContext::from_usage(Some(&usage), &Canvas::default());
@@ -708,6 +1173,29 @@ fn provider_specific_long_window_labels_are_available_to_templates() {
 }
 
 #[test]
+fn provider_specific_session_window_labels_are_available_to_templates() {
+    // Cursor reports a seven-day included-usage window rather than the default
+    // five-hour session, so themes can show the real period length.
+    let usage = crate::models::AppUsageData::from_iter([(
+        ProviderId::Cursor,
+        crate::models::UsageData {
+            session_label: Some("7d".into()),
+            ..Default::default()
+        },
+    )]);
+    let context = DataContext::from_usage(Some(&usage), &Canvas::default());
+    assert_eq!(format_template("{cursor.session.label}", &context), "7d");
+    assert_eq!(format_template("{claude.session.label}", &context), "5h");
+    let localized = DataContext::from_usage_with_runtime(
+        Some(&usage),
+        &Canvas::default(),
+        ThemeRuntime::default().with_language(LanguageId::from_code("nl").unwrap()),
+    );
+    assert_eq!(format_template("{cursor.session.label}", &localized), "7d");
+    assert_eq!(format_template("{claude.session.label}", &localized), "5u");
+}
+
+#[test]
 fn opencode_monthly_window_is_available_to_templates_when_present() {
     let reset = std::time::SystemTime::now() + std::time::Duration::from_secs(1_713_621);
     let usage = crate::models::AppUsageData::from_iter([(
@@ -715,6 +1203,7 @@ fn opencode_monthly_window_is_available_to_templates_when_present() {
         crate::models::UsageData {
             weekly_label: Some("30d".into()),
             monthly: Some(crate::models::UsageSection {
+                available: true,
                 percentage: 43.0,
                 resets_at: Some(reset),
             }),
@@ -750,12 +1239,17 @@ fn opencode_monthly_window_is_available_to_templates_when_present() {
 
 #[test]
 fn starter_theme_renders_transparent_pixels_at_declared_size() {
-    let theme = ThemeDocument::starter();
+    let theme = classic_theme();
     let rendered = render_theme(&theme, None);
-    assert_eq!((rendered.width, rendered.height), (251, 46));
-    assert_eq!(rendered.pixels.len(), 251 * 46);
+    assert_eq!((rendered.width, rendered.height), (217, 46));
+    assert_eq!(rendered.pixels.len(), 217 * 46);
     assert!(rendered.pixels.iter().any(|pixel| pixel >> 24 > 0));
     assert_eq!(rendered.pixels[0] >> 24, 0);
+    let track_alpha = (30..139)
+        .map(|x| rendered.pixels[10 * rendered.width as usize + x] >> 24)
+        .collect::<Vec<_>>();
+    assert!(track_alpha.iter().filter(|alpha| **alpha == 0).count() >= 9);
+    assert!(track_alpha.iter().filter(|alpha| **alpha > 0).count() >= 70);
     assert!(rendered.warnings.is_empty());
 }
 
@@ -786,19 +1280,176 @@ fn empty_text_output_is_a_safe_noop() {
 
 #[test]
 fn theme_surfaces_rasterize_at_requested_dpi_scales() {
-    let theme = ThemeDocument::starter();
+    let theme = classic_theme();
     let runtime = ThemeRuntime::new(true, false, false);
     for (scale, width, height) in [
-        (1.0, 251, 46),
-        (1.25, 314, 58),
-        (1.5, 377, 69),
-        (2.0, 502, 92),
+        (1.0, 217, 46),
+        (1.25, 271, 58),
+        (1.5, 326, 69),
+        (2.0, 434, 92),
     ] {
         let rendered = render_theme_surface_with_runtime_at_scale(&theme, 0, None, runtime, scale);
         assert_eq!((rendered.width, rendered.height), (width, height));
         assert_eq!(rendered.pixels.len(), (width * height) as usize);
         assert!(rendered.warnings.is_empty());
     }
+}
+
+#[test]
+fn floating_card_inset_preserves_content_layout_clipping_and_mouse_targets() {
+    let mut theme = classic_theme();
+    let surface = &mut theme.surfaces[0];
+    surface.width = 40.0.into();
+    surface.height = 20.0.into();
+    surface.background = LayerBackground::None;
+    surface.content = SceneContent::None;
+    surface.border = None;
+    surface.mouse_events = Some(MouseEvents {
+        right_click: "refresh()".into(),
+        ..Default::default()
+    });
+    let root_id = surface.id.clone();
+    let mut parent = SceneObject::object("container", "Container");
+    parent.width = Expression("canvas.width".into());
+    parent.height = 20.0.into();
+    let mut child = SceneObject::object("edge", "Edge-to-edge content");
+    child.parent = Some(parent.id.clone());
+    child.y = 4.0.into();
+    child.width = Expression("canvas.width".into());
+    child.height = 12.0.into();
+    child.background = LayerBackground::Colour {
+        colour: Paint::new("#FF0000FF"),
+    };
+    // Moving the frame must not change authored expressions such as this.x.
+    if let LayerBackground::Colour { colour } = &mut child.background {
+        colour.opacity = Expression("this.x == 0".into());
+    }
+    child.mouse_events = Some(MouseEvents {
+        click: "refresh()".into(),
+        ..Default::default()
+    });
+    surface.children = vec![parent, child];
+    let docked = ThemeRuntime::default();
+    let floating = docked.with_nest(SurfaceNest::Floating);
+    assert_eq!(resolve_surface_size(&theme, 0, None, docked), (40, 20));
+    assert_eq!(resolve_surface_size(&theme, 0, None, floating), (60, 20));
+    assert_eq!(
+        resolve_surface_content_size(&theme, 0, None, floating),
+        (40, 20)
+    );
+    assert_eq!(
+        resolve_object_bounds_with_runtime(&theme, 0, 1, None, floating),
+        Some((10.0, 4.0, 40.0, 12.0))
+    );
+    assert_eq!(
+        hit_test_mouse_event(&theme, 0, 10.0, 10.0, None, floating).as_deref(),
+        Some("edge")
+    );
+    assert_eq!(
+        hit_test_mouse_event(&theme, 0, 49.9, 10.0, None, floating).as_deref(),
+        Some("edge")
+    );
+    for x in [0.0, 9.9, 50.0, 59.9] {
+        assert_eq!(
+            hit_test_mouse_event(&theme, 0, x, 10.0, None, floating).as_deref(),
+            Some(root_id.as_str())
+        );
+    }
+    assert_eq!(
+        hit_test_mouse_event(&theme, 0, 60.0, 10.0, None, floating),
+        None
+    );
+    let context = mouse_action_object_context(&theme, 0, "edge", None, floating).unwrap();
+    assert_eq!(context.get("canvas.width"), Some(40.0));
+    for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+        let rendered = render_theme_surface_with_runtime_at_scale(&theme, 0, None, floating, scale);
+        assert!(rendered.warnings.is_empty());
+        assert_eq!(rendered.width, (60.0 * scale).round() as u32);
+        let y = (10.0 * scale) as u32;
+        let start = (10.0 * scale).round() as u32;
+        let end = start + (40.0 * scale).round() as u32;
+        for x in 0..rendered.width {
+            assert_eq!(
+                rendered.pixels[(y * rendered.width + x) as usize] == 0xFFFF0000,
+                (start..end).contains(&x),
+                "scale={scale}, x={x}"
+            );
+        }
+    }
+    // Authored backgrounds do not receive the automatic card or its padding.
+    theme.surfaces[0].background = LayerBackground::Colour {
+        colour: Paint::new("#123456FF"),
+    };
+    assert_eq!(resolve_surface_size(&theme, 0, None, floating), (40, 20));
+}
+
+#[test]
+fn compact_quad_only_grows_when_the_automatic_floating_card_is_present() {
+    let theme: ThemeDocument =
+        serde_json::from_str(include_str!("../themes/compact-fluent-quad.json")).unwrap();
+    for mask in 1..(1 << ProviderId::ALL.len()) {
+        let providers = ProviderSet::from_enabled(
+            ProviderId::ALL
+                .into_iter()
+                .enumerate()
+                .filter_map(|(i, p)| (mask & (1 << i) != 0).then_some(p)),
+        );
+        let runtime = ThemeRuntime::from_providers(providers);
+        let (width, height) = resolve_surface_size(&theme, 0, None, runtime);
+        assert_eq!(
+            resolve_surface_size(&theme, 0, None, runtime.with_nest(SurfaceNest::Floating)),
+            (width + 20, height)
+        );
+        for nest in [
+            SurfaceNest::Taskbar,
+            SurfaceNest::Desktop,
+            SurfaceNest::TrayIcon,
+        ] {
+            assert_eq!(
+                resolve_surface_size(&theme, 0, None, runtime.with_nest(nest)),
+                (width, height)
+            );
+        }
+    }
+}
+
+#[test]
+fn compact_fluent_quad_adds_a_fable_column_when_the_limit_is_available() {
+    use crate::models::{UsageData, UsageLimit, UsageSection};
+
+    let theme: ThemeDocument =
+        serde_json::from_str(include_str!("../themes/compact-fluent-quad.json")).unwrap();
+    let usage = AppUsageData::from_iter([(
+        ProviderId::Claude,
+        UsageData {
+            limits: vec![UsageLimit {
+                key: "weekly_scoped_fable".into(),
+                kind: "weekly_scoped".into(),
+                label: "Fable".into(),
+                model: Some("Fable".into()),
+                model_id: None,
+                scope: None,
+                is_active: true,
+                usage: UsageSection {
+                    available: true,
+                    percentage: 43.0,
+                    resets_at: None,
+                },
+            }],
+            ..Default::default()
+        },
+    )]);
+    let runtime = ThemeRuntime::new(true, false, false);
+    let (base_width, height) = resolve_surface_size(&theme, 0, None, runtime);
+
+    assert_eq!(
+        resolve_surface_size(&theme, 0, Some(&usage), runtime),
+        (base_width + 96, height)
+    );
+    assert!(theme.surfaces[0]
+        .children
+        .iter()
+        .any(|object| object.id == "fable-provider"));
 }
 
 #[test]
@@ -817,6 +1468,88 @@ fn segmented_progress_reserves_gaps_only_between_segments() {
     );
     assert!(mask[0]);
     assert!(mask[33]);
+}
+
+#[test]
+fn segmented_progress_snaps_segments_and_gaps_to_whole_pixels() {
+    // The classic widget bar is 10 segments of 10 logical px with 1 px gaps.
+    for (scale, segment, gap) in [
+        (1.0, 10, 1),
+        (1.25, 12, 1),
+        (1.5, 14, 2),
+        (1.75, 17, 2),
+        (2.0, 20, 2),
+    ] {
+        let extent = (109.0_f64 * scale).round() as u32;
+        let layout = SegmentLayout::new(extent, 10, scale).unwrap();
+        assert_eq!(
+            (layout.segment, layout.gap),
+            (segment, gap),
+            "scale={scale}"
+        );
+        assert!(layout.extent() <= extent, "scale={scale}");
+
+        let mut runs = Vec::new();
+        for position in 0..extent {
+            let visible = segmented_position_visible(position, extent, 10, scale);
+            match runs.last_mut() {
+                Some((kind, length)) if *kind == visible => *length += 1,
+                _ => runs.push((visible, 1)),
+            }
+        }
+        if runs.last().is_some_and(|(visible, _)| !visible) {
+            runs.pop();
+        }
+        assert_eq!(runs.len(), 19, "scale={scale}");
+        for (index, (visible, length)) in runs.into_iter().enumerate() {
+            assert_eq!(visible, index % 2 == 0, "scale={scale}");
+            assert_eq!(length, if visible { segment } else { gap }, "scale={scale}");
+        }
+    }
+}
+
+#[test]
+fn right_to_left_segments_anchor_at_the_right_edge() {
+    let white = Rgba {
+        r: 255,
+        g: 255,
+        b: 255,
+        a: 255,
+    };
+    // 164 px at 150%: 10 x 14 px segments with 2 px gaps use 158 px.
+    let mut pixels = vec![0; 164];
+    draw_progress(
+        &mut pixels,
+        164,
+        1,
+        white,
+        0.0,
+        1.0,
+        ProgressDirection::RightToLeft,
+        10,
+        1.5,
+    );
+    assert!(pixels[..6].iter().all(|pixel| *pixel == 0));
+    assert_ne!(pixels[6], 0);
+    assert_ne!(pixels[163], 0);
+    assert_eq!(pixels[163 - 14], 0);
+
+    // Partial fills are measured against the drawn bar, not the box.
+    let mut pixels = vec![0; 164];
+    draw_progress(
+        &mut pixels,
+        164,
+        1,
+        white,
+        0.0,
+        0.5,
+        ProgressDirection::LeftToRight,
+        10,
+        1.5,
+    );
+    // Half of 158 px ends at pixel 78, inside the gap after segment five.
+    assert_ne!(pixels[77], 0);
+    assert!(pixels[78..].iter().all(|pixel| *pixel == 0));
 }
 
 #[test]
@@ -847,8 +1580,146 @@ fn segmented_progress_preserves_both_rounded_outer_edges() {
 }
 
 #[test]
+fn segmented_progress_without_visible_gaps_keeps_the_full_extent() {
+    let white = Rgba {
+        r: 255,
+        g: 255,
+        b: 255,
+        a: 255,
+    };
+    for gap in [0.0, 0.4, -1.0, f64::NAN, f64::INFINITY, 10.0] {
+        // Ten segments cannot fit nine one-pixel gaps into an 18-pixel box.
+        for direction in [
+            ProgressDirection::LeftToRight,
+            ProgressDirection::RightToLeft,
+            ProgressDirection::TopToBottom,
+            ProgressDirection::BottomToTop,
+        ] {
+            let horizontal = matches!(
+                direction,
+                ProgressDirection::LeftToRight | ProgressDirection::RightToLeft
+            );
+            let (width, height) = if horizontal { (18, 3) } else { (3, 18) };
+            for amount in [0.0, 0.25, 0.5, 1.0] {
+                let mut segmented = vec![0; (width * height) as usize];
+                let mut continuous = segmented.clone();
+                draw_progress(
+                    &mut segmented,
+                    width,
+                    height,
+                    white,
+                    1.0,
+                    amount,
+                    direction,
+                    10,
+                    gap,
+                );
+                draw_progress(
+                    &mut continuous,
+                    width,
+                    height,
+                    white,
+                    1.0,
+                    amount,
+                    direction,
+                    1,
+                    0.0,
+                );
+                assert_eq!(
+                    segmented, continuous,
+                    "gap={gap}, direction={direction:?}, amount={amount}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn segmented_progress_matches_across_directions_at_fractional_scales() {
+    let white = Rgba {
+        r: 255,
+        g: 255,
+        b: 255,
+        a: 255,
+    };
+    for scale in [1.0, 1.25, 1.5, 1.75, 2.0, 3.0] {
+        let extent = (109.0_f64 * scale).round() as u32;
+        let thickness = (8.0_f64 * scale).round() as u32;
+        for amount in [0.0, 0.01, 0.25, 0.5, 0.99, 1.0] {
+            let mut forward = vec![0; (extent * thickness) as usize];
+            draw_progress(
+                &mut forward,
+                extent,
+                thickness,
+                white,
+                2.0 * scale,
+                amount,
+                ProgressDirection::LeftToRight,
+                10,
+                scale,
+            );
+            for direction in [
+                ProgressDirection::RightToLeft,
+                ProgressDirection::TopToBottom,
+                ProgressDirection::BottomToTop,
+            ] {
+                let (width, height) = if direction == ProgressDirection::RightToLeft {
+                    (extent, thickness)
+                } else {
+                    (thickness, extent)
+                };
+                let mut actual = vec![0; forward.len()];
+                draw_progress(
+                    &mut actual,
+                    width,
+                    height,
+                    white,
+                    2.0 * scale,
+                    amount,
+                    direction,
+                    10,
+                    scale,
+                );
+                for y in 0..thickness {
+                    for x in 0..extent {
+                        let index = match direction {
+                            ProgressDirection::RightToLeft => y * extent + extent - 1 - x,
+                            ProgressDirection::TopToBottom => x * thickness + y,
+                            ProgressDirection::BottomToTop => (extent - 1 - x) * thickness + y,
+                            _ => unreachable!(),
+                        };
+                        assert_eq!(
+                            actual[index as usize],
+                            forward[(y * extent + x) as usize],
+                            "scale={scale}, amount={amount}, direction={direction:?}, x={x}, y={y}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn segmented_layout_stays_in_bounds_for_extreme_inputs() {
+    for extent in [0, 1, 2, 19, 109, 164, u32::MAX] {
+        for count in [0, 1, 2, 10, u16::MAX as u32, u32::MAX] {
+            for gap in [-1.0, 0.0, 0.4, 1.0, 1.5, f64::MAX, f64::NAN, f64::INFINITY] {
+                if let Some(layout) = SegmentLayout::new(extent, count, gap) {
+                    assert!(layout.extent() <= extent);
+                    assert!(layout.segment > 0);
+                    assert!(layout.contains(0));
+                    assert!(layout.contains(layout.extent() - 1));
+                    assert!(!layout.contains(layout.extent()));
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn invalid_render_scales_fall_back_to_one() {
-    let theme = ThemeDocument::starter();
+    let theme = classic_theme();
     for scale in [0.0, -1.0, f64::NAN, f64::INFINITY] {
         let rendered = render_theme_surface_with_runtime_at_scale(
             &theme,
@@ -857,13 +1728,13 @@ fn invalid_render_scales_fall_back_to_one() {
             ThemeRuntime::default(),
             scale,
         );
-        assert_eq!((rendered.width, rendered.height), (251, 46));
+        assert_eq!((rendered.width, rendered.height), (217, 46));
     }
 }
 
 #[test]
 fn child_objects_resolve_against_parent_anchors_and_clip() {
-    let mut theme = ThemeDocument::starter();
+    let mut theme = classic_theme();
     let surface = &mut theme.surfaces[0];
     let mut parent = SceneObject::object("parent", "Parent with text content");
     parent.visibility = 50.0.into();
@@ -925,7 +1796,7 @@ fn child_objects_resolve_against_parent_anchors_and_clip() {
 
 #[test]
 fn legacy_padding_is_ignored_and_offsets_control_child_position() {
-    let mut theme = ThemeDocument::starter();
+    let mut theme = classic_theme();
     let surface = &mut theme.surfaces[0];
     let mut parent = SceneObject::object("parent", "Parent");
     parent.x = 20.0.into();
@@ -963,7 +1834,7 @@ fn legacy_padding_is_ignored_and_offsets_control_child_position() {
 
 #[test]
 fn parent_rotation_rotates_child_position_and_clip() {
-    let mut theme = ThemeDocument::starter();
+    let mut theme = classic_theme();
     let surface = &mut theme.surfaces[0];
     surface.width = 200.0.into();
     surface.height = 200.0.into();
@@ -1007,7 +1878,7 @@ fn provider_variables_follow_settings_instead_of_poll_availability() {
 
 #[test]
 fn render_collapses_layout_while_zero_visibility_keeps_space() {
-    let mut theme = ThemeDocument::starter();
+    let mut theme = classic_theme();
     let runtime = ThemeRuntime::new(true, true, false);
     let surface = &theme.surfaces[0];
     let claude = surface
@@ -1024,19 +1895,19 @@ fn render_collapses_layout_while_zero_visibility_keeps_space() {
     theme.surfaces[0].children[claude].visibility = 0.0.into();
     assert_eq!(
         resolve_object_bounds_with_runtime(&theme, 0, codex, None, runtime).map(|bounds| bounds.0),
-        Some(187.0)
+        Some(164.0)
     );
 
     theme.surfaces[0].children[claude].render = 0.0.into();
     assert_eq!(
         resolve_object_bounds_with_runtime(&theme, 0, codex, None, runtime).map(|bounds| bounds.0),
-        Some(38.0)
+        Some(41.0)
     );
 }
 
 #[test]
 fn surface_render_and_visibility_are_expression_driven() {
-    let mut theme = ThemeDocument::starter();
+    let mut theme = classic_theme();
     theme.surfaces[0].render = Expression("providers.codex.enabled".into());
     assert!(!surface_should_render(
         &theme,
@@ -1065,7 +1936,7 @@ fn surface_render_and_visibility_are_expression_driven() {
 
 #[test]
 fn surface_placement_offsets_are_expression_driven() {
-    let mut theme = ThemeDocument::starter();
+    let mut theme = classic_theme();
     let surface = &mut theme.surfaces[0];
     surface.width = 200.0.into();
     surface.placement.offset_x_expression = Some(Expression("canvas.width / 2".into()));
@@ -1077,7 +1948,7 @@ fn surface_placement_offsets_are_expression_driven() {
 
 #[test]
 fn starter_adapts_width_segments_and_collapsed_provider_rows() {
-    let theme = ThemeDocument::starter();
+    let theme = classic_theme();
     let surface = &theme.surfaces[0];
     let index = |id: &str| {
         surface
@@ -1087,26 +1958,36 @@ fn starter_adapts_width_segments_and_collapsed_provider_rows() {
             .unwrap()
     };
     for (runtime, width, segments) in [
-        (ThemeRuntime::new(true, false, false), 251, 10),
-        (ThemeRuntime::new(false, true, false), 251, 10),
-        (ThemeRuntime::new(false, false, true), 251, 10),
-        (ThemeRuntime::new(true, true, false), 345, 5),
-        (ThemeRuntime::new(true, false, true), 345, 5),
-        (ThemeRuntime::new(false, true, true), 345, 5),
-        (ThemeRuntime::new(true, true, true), 461, 4),
+        (ThemeRuntime::new(true, false, false), 217, 10),
+        (ThemeRuntime::new(false, true, false), 217, 10),
+        (ThemeRuntime::new(false, false, true), 217, 10),
+        (ThemeRuntime::new(true, true, false), 285, 5),
+        (ThemeRuntime::new(true, false, true), 285, 5),
+        (ThemeRuntime::new(false, true, true), 285, 5),
+        (ThemeRuntime::new(true, true, true), 375, 4),
         (
             ThemeRuntime::from_providers(ProviderSet::from_enabled([ProviderId::OpenCode])),
-            280,
+            245,
             10,
         ),
         (
             ThemeRuntime::from_providers(ProviderSet::from_enabled([ProviderId::Cursor])),
-            280,
+            245,
+            10,
+        ),
+        (
+            ThemeRuntime::from_providers(ProviderSet::from_enabled([ProviderId::Grok])),
+            217,
+            10,
+        ),
+        (
+            ThemeRuntime::from_providers(ProviderSet::from_enabled([ProviderId::Copilot])),
+            217,
             10,
         ),
         (
             ThemeRuntime::from_providers(ProviderSet::from_enabled(ProviderId::ALL)),
-            685,
+            725,
             2,
         ),
     ] {
@@ -1133,7 +2014,7 @@ fn starter_adapts_width_segments_and_collapsed_provider_rows() {
     assert_eq!(
         resolve_object_bounds_with_runtime(&theme, 0, index("codex-provider"), None, codex_only,)
             .map(|bounds| bounds.0),
-        Some(38.0)
+        Some(41.0)
     );
     assert!(resolve_object_bounds_with_runtime(
         &theme,
@@ -1154,13 +2035,13 @@ fn starter_adapts_width_segments_and_collapsed_provider_rows() {
             claude_and_antigravity,
         )
         .map(|bounds| bounds.0),
-        Some(187.0)
+        Some(164.0)
     );
 }
 
 #[test]
 fn each_surface_renders_at_its_own_size() {
-    let mut theme = ThemeDocument::starter();
+    let mut theme = classic_theme();
     let mut second = theme.surfaces[0].clone();
     second.id = "secondary".into();
     second.width = 80.0.into();
@@ -1175,15 +2056,14 @@ fn each_surface_renders_at_its_own_size() {
 
 #[test]
 fn starter_has_a_taskbar_widget_and_provider_tray_icons() {
-    let theme = ThemeDocument::starter();
-    assert!(theme.is_builtin());
-    assert_eq!(theme.id, CAPSULA_THEME_ID);
+    let theme = classic_theme();
+    assert!(theme.is_builtin_classic());
     assert_eq!(theme.surfaces[0].placement.nest, SurfaceNest::Taskbar);
     assert_eq!(
         theme.surfaces[0].placement.reference.region,
         ReferenceRegion::SystemTray
     );
-    assert_eq!(theme.surfaces.len(), 6);
+    assert_eq!(theme.surfaces.len(), 8);
     assert!(theme.surfaces[1..]
         .iter()
         .all(|surface| surface.placement.nest == SurfaceNest::TrayIcon));
@@ -1217,7 +2097,7 @@ fn migrated_theme_is_writable_and_only_moves_the_taskbar_surface() {
 #[test]
 fn hidden_legacy_widget_creates_an_unplaced_hidden_copy() {
     let theme = ThemeDocument::migrated_from_legacy(None, false);
-    let classic = ThemeDocument::starter();
+    let classic = classic_theme();
     assert_eq!(theme.surfaces[0].render.0, "0");
     assert_eq!(theme.surfaces[0].placement, classic.surfaces[0].placement);
     assert!(theme.validate().is_empty());
@@ -1225,7 +2105,7 @@ fn hidden_legacy_widget_creates_an_unplaced_hidden_copy() {
 
 #[test]
 fn starter_tray_icons_follow_enabled_providers() {
-    let theme = ThemeDocument::starter();
+    let theme = classic_theme();
     let runtime = ThemeRuntime::new(false, true, false);
     assert!(!surface_should_render(&theme, 1, None, runtime));
     assert!(surface_should_render(&theme, 2, None, runtime));
@@ -1237,13 +2117,11 @@ fn starter_tray_icons_follow_enabled_providers() {
 
 #[test]
 fn built_in_themes_are_valid_and_cannot_be_saved_as_editable_themes() {
-    assert_eq!(
-        BUILTIN_THEME_SOURCES
-            .iter()
-            .map(|(id, _)| *id)
-            .collect::<Vec<_>>(),
-        vec![CAPSULA_THEME_ID, CLASSIC_THEME_ID]
-    );
+    assert_eq!(BUILTIN_THEME_SOURCES.len(), 4);
+    assert_eq!(BUILTIN_THEME_SOURCES[0].0, CAPSULA_THEME_ID);
+    assert_eq!(BUILTIN_THEME_SOURCES[1].0, CLASSIC_THEME_ID);
+    assert_eq!(BUILTIN_THEME_SOURCES[2].0, COMPACT_FLUENT_QUAD_THEME_ID);
+    assert_eq!(BUILTIN_THEME_SOURCES[3].0, CLASSIC_VERTICAL_THEME_ID);
     assert!(REMOVED_BUILTIN_THEME_IDS
         .iter()
         .all(|id| !is_builtin_theme_id(id)));
@@ -1274,132 +2152,241 @@ fn built_in_themes_are_valid_and_cannot_be_saved_as_editable_themes() {
         assert!(save_theme(&theme).unwrap_err().contains("read-only"));
     }
 
-    let error = save_theme(&ThemeDocument::starter()).unwrap_err();
+    let error = save_theme(&classic_theme()).unwrap_err();
     assert!(error.contains("read-only"));
 
-    let mut duplicate = ThemeDocument::starter();
+    let mut duplicate = classic_theme();
     duplicate.id = "classic-copy".into();
     assert!(!duplicate.is_builtin());
     assert!(!duplicate.is_builtin_classic());
 }
 
 #[test]
-fn multi_provider_theme_rows_use_claude_geometry_and_provider_accents() {
-    let provider_accents = [
-        ("claude", "#D97757FF"),
-        ("codex", "#10A37FFF"),
-        ("cursor", "#7C5CFFFF"),
-        ("antigravity", "#4285F4FF"),
-        ("opencode", "#4CAF50FF"),
-    ];
-    let mut multi_provider_themes = 0;
-
-    for (_, source) in BUILTIN_THEME_SOURCES
-        .iter()
-        .chain(BUNDLED_EDITABLE_THEME_SOURCES)
-    {
-        let theme: ThemeDocument = serde_json::from_str(source).unwrap();
-        let Some(main) = theme.surfaces.iter().find(|surface| surface.id == "main") else {
-            continue;
-        };
-        if !main
-            .children
-            .iter()
-            .any(|object| object.id == "claude-provider")
-        {
-            continue;
-        }
-        multi_provider_themes += 1;
-
-        for (provider, accent) in provider_accents {
-            let parent = format!("{provider}-provider");
-            let provider_objects = main
-                .children
-                .iter()
-                .filter(|object| object.parent.as_deref() == Some(parent.as_str()))
-                .collect::<Vec<_>>();
-            assert!(
-                !provider_objects.is_empty(),
-                "{} is missing its {provider} indicator",
-                theme.name
+fn classic_vertical_stacks_enabled_providers_and_preserves_tray_roots() {
+    let mut theme: ThemeDocument =
+        serde_json::from_str(include_str!("../themes/classic-vertical.json")).unwrap();
+    theme.prepare_runtime();
+    let classic = classic_theme();
+    assert_eq!(theme.surfaces.len(), classic.surfaces.len());
+    for (vertical, original) in theme.surfaces.iter().zip(&classic.surfaces).skip(1) {
+        assert_eq!(
+            serde_json::to_value(vertical).unwrap(),
+            serde_json::to_value(original).unwrap()
+        );
+    }
+    for providers in [
+        ProviderSet::from_enabled([ProviderId::Codex]),
+        ProviderSet::from_enabled([ProviderId::Claude, ProviderId::Copilot]),
+        ProviderSet::from_enabled(ProviderId::ALL),
+    ] {
+        for host_width in [46, 62, 100] {
+            let runtime =
+                ThemeRuntime::from_providers(providers).with_host_dimensions(host_width, 1440);
+            let width = (host_width - 2).min(62);
+            let provider_height = |provider| match provider {
+                ProviderId::Grok | ProviderId::Copilot => 42,
+                _ => 64,
+            };
+            let height = providers.iter().map(provider_height).sum();
+            assert_eq!(
+                resolve_surface_size(&theme, 0, None, runtime),
+                (width, height)
             );
-
-            for object in provider_objects {
-                match &object.content {
-                    SceneContent::Progress {
-                        direction,
-                        fill,
-                        corner_radius,
-                        segments,
-                        segment_gap,
-                        ..
-                    } => {
-                        let expected_y = if object.id.contains("session") {
-                            "8"
-                        } else {
-                            "30"
-                        };
-                        assert_eq!(object.y.0, expected_y, "{} / {}", theme.name, object.id);
-                        assert_eq!(object.height.0, "10", "{} / {}", theme.name, object.id);
-                        assert_eq!(
-                            *direction,
-                            ProgressDirection::LeftToRight,
-                            "{} / {}",
-                            theme.name,
-                            object.id
-                        );
-                        assert_eq!(fill.color, accent, "{} / {}", theme.name, object.id);
-                        assert_eq!(corner_radius.0, "3", "{} / {}", theme.name, object.id);
-                        assert_eq!(*segments, 10, "{} / {}", theme.name, object.id);
-                        assert_eq!(segment_gap.0, "1", "{} / {}", theme.name, object.id);
-                    }
-                    SceneContent::Text {
-                        font_size,
-                        weight,
-                        rendering,
-                        align,
-                        ..
-                    } => {
-                        let expected_y = if object.id.contains("session") {
-                            "6"
-                        } else {
-                            "28"
-                        };
-                        assert_eq!(object.y.0, expected_y, "{} / {}", theme.name, object.id);
-                        assert_eq!(object.height.0, "13", "{} / {}", theme.name, object.id);
-                        assert_eq!(font_size.0, "12", "{} / {}", theme.name, object.id);
-                        assert_eq!(
-                            *weight,
-                            FontWeight::Medium,
-                            "{} / {}",
-                            theme.name,
-                            object.id
-                        );
-                        assert_eq!(
-                            *rendering,
-                            FontRendering::ClearType,
-                            "{} / {}",
-                            theme.name,
-                            object.id
-                        );
-                        assert_eq!(*align, TextAlign::Left, "{} / {}", theme.name, object.id);
-                    }
-                    SceneContent::None => {}
-                }
+            let rendered = render_theme_surface_with_runtime(&theme, 0, None, runtime);
+            assert!(rendered.warnings.is_empty(), "{:?}", rendered.warnings);
+            assert!(rendered.pixels.iter().any(|pixel| pixel >> 24 > 0));
+            let mut y = 0;
+            for provider in providers.iter() {
+                let id = format!("{}-provider", provider.descriptor().key);
+                let index = theme.surfaces[0]
+                    .children
+                    .iter()
+                    .position(|layer| layer.id == id)
+                    .unwrap();
+                assert_eq!(
+                    resolve_object_bounds_with_runtime(&theme, 0, index, None, runtime),
+                    Some((
+                        0.0,
+                        y as f64,
+                        width as f64,
+                        provider_height(provider) as f64
+                    ))
+                );
+                y += provider_height(provider);
             }
         }
     }
+}
 
-    assert_eq!(multi_provider_themes, 3);
+#[test]
+fn classic_vertical_formats_monthly_limits_and_countdown_badges() {
+    use crate::models::{UsageData, UsageSection};
+    let theme: ThemeDocument =
+        serde_json::from_str(include_str!("../themes/classic-vertical.json")).unwrap();
+    let usage = AppUsageData::from_iter([(
+        ProviderId::Codex,
+        UsageData {
+            weekly: UsageSection {
+                available: true,
+                percentage: 42.0,
+                resets_at: None,
+            },
+            weekly_label: Some("30d".into()),
+            ..Default::default()
+        },
+    )]);
+    for (countdown, expected) in [(false, "30d 42%"), (true, "30d 58%")] {
+        let runtime = ThemeRuntime::from_providers(ProviderSet::from_enabled([ProviderId::Codex]))
+            .with_poll_state(true, false)
+            .with_countdown(countdown)
+            .with_host_dimensions(62, 1440);
+        let context =
+            DataContext::from_usage_with_runtime(Some(&usage), &Canvas::default(), runtime);
+        let text = theme.surfaces[0]
+            .children
+            .iter()
+            .find(|object| object.id == "codex-weekly-value-dark")
+            .unwrap();
+        let SceneContent::Text { template, .. } = &text.content else {
+            panic!("missing usage badge")
+        };
+        assert_eq!(format_template(template, &context), expected);
+        let rendered =
+            render_theme_surface_with_runtime_at_scale(&theme, 0, Some(&usage), runtime, 1.25);
+        assert_eq!((rendered.width, rendered.height), (75, 80));
+        assert!(rendered.warnings.is_empty(), "{:?}", rendered.warnings);
+    }
+}
+
+#[test]
+fn classic_vertical_headings_remain_legible_on_taskbars_and_floating_cards() {
+    let theme: ThemeDocument =
+        serde_json::from_str(include_str!("../themes/classic-vertical.json")).unwrap();
+    let luminance = |color: Rgba| {
+        let linear = |channel: u8| {
+            let value = f64::from(channel) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+    };
+    for (suffix, backgrounds) in [
+        ("-light", ["#CBD4E6", "#D3D3D3", "#FFFFFF", "#F3F3F3"]),
+        ("", ["#010A1C", "#181820", "#141E34", "#182137"]),
+    ] {
+        for provider in ProviderId::ALL {
+            let id = format!("{}-title{suffix}", provider.descriptor().key);
+            let title = theme.surfaces[0]
+                .children
+                .iter()
+                .find(|o| o.id == id)
+                .unwrap();
+            let SceneContent::Text { color, .. } = &title.content else {
+                panic!("missing heading");
+            };
+            let foreground = luminance(parse_color(&color.color).unwrap());
+            // Include the tinted Windows 10 VM taskbar and floating card.
+            for background in backgrounds {
+                let background = luminance(parse_color(background).unwrap());
+                let contrast =
+                    (background.max(foreground) + 0.05) / (background.min(foreground) + 0.05);
+                assert!(contrast >= 4.5, "{id}: contrast={contrast}");
+            }
+        }
+    }
+}
+
+#[test]
+fn compact_fluent_quad_widget_respects_usage_direction() {
+    use crate::models::{CreditsSection, UsageData, UsageLimit, UsageSection};
+
+    let theme: ThemeDocument =
+        serde_json::from_str(include_str!("../themes/compact-fluent-quad.json")).unwrap();
+    let section = UsageSection {
+        available: true,
+        percentage: 25.0,
+        resets_at: None,
+    };
+    let usage = AppUsageData::from_iter(ProviderId::ALL.into_iter().map(|provider| {
+        (
+            provider,
+            UsageData {
+                session: section.clone(),
+                weekly: section.clone(),
+                limits: (provider == ProviderId::Claude)
+                    .then(|| UsageLimit {
+                        key: "weekly_scoped_fable".into(),
+                        kind: "weekly_scoped".into(),
+                        label: "Fable".into(),
+                        model: Some("Fable".into()),
+                        model_id: None,
+                        scope: None,
+                        is_active: true,
+                        usage: section.clone(),
+                    })
+                    .into_iter()
+                    .collect(),
+                credits: Some(CreditsSection {
+                    percentage: 25.0,
+                    remaining: 24.1,
+                    total: 40.83,
+                }),
+                external_pool: (provider == ProviderId::Antigravity).then(|| {
+                    Box::new(UsageData {
+                        session: section.clone(),
+                        weekly: section.clone(),
+                        ..Default::default()
+                    })
+                }),
+                ..Default::default()
+            },
+        )
+    }));
+    for (countdown, expected, text) in [(false, 25.0, "25%"), (true, 75.0, "75%")] {
+        let context = DataContext::from_usage_with_runtime(
+            Some(&usage),
+            &Canvas::default(),
+            ThemeRuntime::from_providers(ProviderSet::from_enabled(ProviderId::ALL))
+                .with_countdown(countdown),
+        );
+        for object in &theme.surfaces[0].children {
+            match &object.content {
+                SceneContent::Progress { value, .. } => {
+                    assert_eq!(
+                        evaluate(&value.0, &context).unwrap(),
+                        expected,
+                        "{}",
+                        object.id
+                    );
+                }
+                SceneContent::Text { template, .. } if template.contains(":usage_line}") => {
+                    assert!(
+                        format_template(template, &context).contains(text),
+                        "{}",
+                        object.id
+                    );
+                }
+                SceneContent::Text { template, .. } if template.contains(".credits.balance") => {
+                    assert_eq!(
+                        format_template(template, &context),
+                        "$24.10",
+                        "{}",
+                        object.id
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 #[test]
 fn bundled_minecraft_theme_is_valid_editable_and_uses_dashboard_v2() {
-    let (expected_id, source) = BUNDLED_EDITABLE_THEME_SOURCES
-        .iter()
-        .find(|(id, _)| *id == MINECRAFT_THEME_ID)
-        .copied()
-        .unwrap();
+    assert_eq!(BUNDLED_EDITABLE_THEME_SOURCES.len(), 2);
+    let (expected_id, source) = BUNDLED_EDITABLE_THEME_SOURCES[0];
     let mut theme: ThemeDocument = serde_json::from_str(source).unwrap();
     assert_eq!(expected_id, MINECRAFT_THEME_ID);
     assert_eq!(theme.id, MINECRAFT_THEME_ID);
@@ -1501,7 +2488,7 @@ fn theme_deletion_is_limited_to_managed_writable_themes() {
 
 #[test]
 fn themes_without_a_nest_migrate_from_their_reference_region() {
-    let mut json = serde_json::to_value(ThemeDocument::starter()).unwrap();
+    let mut json = serde_json::to_value(classic_theme()).unwrap();
     json["surfaces"][0]["placement"] = serde_json::json!({
         "reference": { "region": "system_tray", "display": 0 }
     });
@@ -1525,7 +2512,7 @@ fn themes_without_a_nest_migrate_from_their_reference_region() {
 
 #[test]
 fn nest_and_reference_are_independent() {
-    let mut theme = ThemeDocument::starter();
+    let mut theme = classic_theme();
     theme.surfaces[0].placement.nest = SurfaceNest::Desktop;
     theme.surfaces[0].placement.reference.region = ReferenceRegion::SystemTray;
     theme.prepare_runtime();
@@ -1546,7 +2533,7 @@ fn nest_and_reference_are_independent() {
 
 #[test]
 fn unsupported_theme_schemas_are_rejected_instead_of_migrated() {
-    let mut theme = ThemeDocument::starter();
+    let mut theme = classic_theme();
     theme.schema_version = THEME_SCHEMA_VERSION + 1;
     theme.prepare_runtime();
     assert_eq!(theme.schema_version, THEME_SCHEMA_VERSION + 1);
@@ -1608,7 +2595,7 @@ fn mouse_actions_validate_targets_and_runtime_values() {
         ..Default::default()
     });
     surface.children.push(button);
-    let mut theme = ThemeDocument::starter();
+    let mut theme = classic_theme();
     theme.surfaces = vec![surface];
     let context = DataContext::from_usage(None, &Canvas::default());
     let errors = validate_mouse_action_script(
@@ -1627,7 +2614,7 @@ fn mouse_actions_validate_targets_and_runtime_values() {
 
 #[test]
 fn action_overrides_are_runtime_only_and_reset_restores_saved_expression() {
-    let mut theme = ThemeDocument::starter();
+    let mut theme = classic_theme();
     theme.id = "mouse-actions".into();
     let surface = &mut theme.surfaces[0];
     let target_id = surface.children[0].id.clone();
@@ -1661,7 +2648,7 @@ fn action_overrides_are_runtime_only_and_reset_restores_saved_expression() {
 
 #[test]
 fn tray_root_can_toggle_the_main_root_on_another_surface() {
-    let theme = ThemeDocument::starter();
+    let theme = classic_theme();
     let tray_id = theme.surfaces[1].id.clone();
     let click = theme.surfaces[1]
         .mouse_events
@@ -1697,7 +2684,7 @@ fn tray_root_can_toggle_the_main_root_on_another_surface() {
 
 #[test]
 fn increase_and_decrease_accumulate_from_the_effective_value() {
-    let mut theme = ThemeDocument::starter();
+    let mut theme = classic_theme();
     theme.id = "mouse-adjustments".into();
     let target_id = theme.surfaces[0].children[0].id.clone();
     theme.surfaces[0].children[0].width = 100.0.into();
@@ -1725,7 +2712,7 @@ fn increase_and_decrease_accumulate_from_the_effective_value() {
 
 #[test]
 fn dashboard_and_context_menu_actions_emit_ordered_effects() {
-    let theme = ThemeDocument::starter();
+    let theme = classic_theme();
     let self_id = theme.surfaces[0].id.clone();
     let effects = execute_mouse_actions(
         &theme,
@@ -1750,7 +2737,7 @@ fn dashboard_and_context_menu_actions_emit_ordered_effects() {
 
 #[test]
 fn hit_testing_selects_the_topmost_interactive_layer() {
-    let mut theme = ThemeDocument::starter();
+    let mut theme = classic_theme();
     theme.id = "mouse-hit-test".into();
     let surface = &mut theme.surfaces[0];
     surface.width = 100.0.into();
@@ -1778,6 +2765,7 @@ fn headline_follows_the_window_closest_to_its_limit() {
     use crate::models::{CreditsSection, UsageData, UsageSection};
 
     let percent = |value: f64| UsageSection {
+        available: true,
         percentage: value,
         resets_at: None,
     };
@@ -1827,6 +2815,7 @@ fn codex_session_bindings_fall_back_without_hiding_the_exact_five_hour_window() 
     let usage = UsageData {
         session: UsageSection::default(),
         weekly: UsageSection {
+            available: true,
             percentage: 83.0,
             resets_at: Some(reset),
         },
@@ -1846,6 +2835,11 @@ fn codex_session_bindings_fall_back_without_hiding_the_exact_five_hour_window() 
         context.get("codex.weekly.reset.unix")
     );
     assert_eq!(context.get("active.session.percentage"), Some(83.0));
+    assert_eq!(context.get("codex.session.available"), Some(1.0));
+    assert_eq!(context.get("active.session.available"), Some(1.0));
+    assert_eq!(context.get("codex.five_hour.available"), Some(0.0));
+    assert_eq!(context.get("active.five_hour.available"), Some(0.0));
+    assert_eq!(context.get("codex.weekly.available"), Some(1.0));
 
     // New and bundled themes can still address the actual five-hour window.
     assert_eq!(context.get("codex.five_hour.percentage"), Some(0.0));
@@ -1861,10 +2855,12 @@ fn codex_session_bindings_use_the_real_five_hour_window_when_present() {
 
     let usage = UsageData {
         session: UsageSection {
+            available: true,
             percentage: 12.0,
             resets_at: Some(UNIX_EPOCH + Duration::from_secs(1_787_100_000)),
         },
         weekly: UsageSection {
+            available: true,
             percentage: 83.0,
             resets_at: Some(UNIX_EPOCH + Duration::from_secs(1_787_198_224)),
         },
@@ -1877,10 +2873,141 @@ fn codex_session_bindings_use_the_real_five_hour_window_when_present() {
 
     assert_eq!(context.get("codex.session.percentage"), Some(12.0));
     assert_eq!(context.get("codex.five_hour.percentage"), Some(12.0));
+    assert_eq!(context.get("codex.session.available"), Some(1.0));
+    assert_eq!(context.get("codex.five_hour.available"), Some(1.0));
     assert_ne!(
         context.get("codex.session.reset.unix"),
         context.get("codex.weekly.reset.unix")
     );
+}
+
+#[test]
+fn reported_windows_are_available_even_when_idle_without_reset_times() {
+    use crate::models::{UsageData, UsageSection};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    let empty = DataContext::from_usage(None, &Canvas::default());
+    for name in PROVIDER_DESCRIPTORS
+        .iter()
+        .map(|provider| provider.key)
+        .chain(["active"])
+    {
+        for window in ["session", "five_hour", "weekly", "monthly"] {
+            assert_eq!(empty.get(&format!("{name}.{window}.available")), Some(0.0));
+        }
+    }
+    for reset in [
+        None,
+        Some(UNIX_EPOCH),
+        Some(SystemTime::now() + Duration::from_secs(3600)),
+    ] {
+        let usage = UsageData {
+            session: UsageSection {
+                available: true,
+                percentage: 0.0,
+                resets_at: reset,
+            },
+            weekly: UsageSection {
+                available: true,
+                percentage: 0.0,
+                resets_at: reset,
+            },
+            monthly: Some(UsageSection::default()),
+            ..Default::default()
+        };
+        let data = AppUsageData::from_iter(
+            PROVIDER_DESCRIPTORS
+                .iter()
+                .map(|provider| (provider.id, usage.clone())),
+        );
+        let context = DataContext::from_usage(Some(&data), &Canvas::default());
+        for name in PROVIDER_DESCRIPTORS
+            .iter()
+            .map(|provider| provider.key)
+            .chain(["active"])
+        {
+            for window in ["session", "five_hour", "weekly"] {
+                assert_eq!(
+                    context.get(&format!("{name}.{window}.available")),
+                    Some(1.0)
+                );
+            }
+            // Monthly is explicitly optional, so no reset timestamp is needed.
+            assert_eq!(context.get(&format!("{name}.monthly.available")), Some(1.0));
+        }
+    }
+}
+
+#[test]
+fn absent_windows_and_monthly_labels_are_defined_for_every_provider() {
+    let data = AppUsageData::from_iter(
+        PROVIDER_DESCRIPTORS
+            .iter()
+            .map(|provider| (provider.id, crate::models::UsageData::default())),
+    );
+    for data in [None, Some(&data)] {
+        let context = DataContext::from_usage(data, &Canvas::default());
+        for name in PROVIDER_DESCRIPTORS
+            .iter()
+            .map(|provider| provider.key)
+            .chain(["active"])
+        {
+            for window in ["session", "five_hour", "weekly", "monthly"] {
+                assert_eq!(
+                    context.get(&format!("{name}.{window}.available")),
+                    Some(0.0)
+                );
+            }
+            let label = format!("{{{name}.monthly.label}}");
+            assert!(validate_template(&label, &context).is_empty());
+            assert_eq!(format_template(&label, &context), "30d");
+            assert_eq!(
+                context.get(&format!("{name}.monthly.percentage")),
+                Some(0.0)
+            );
+            assert_eq!(
+                context.get(&format!("{name}.monthly.remaining")),
+                Some(100.0)
+            );
+            assert_eq!(
+                context.get(&format!("{name}.monthly.reset.seconds")),
+                Some(0.0)
+            );
+        }
+    }
+}
+
+#[test]
+fn idle_codex_session_does_not_fall_back_to_a_used_weekly_window() {
+    use crate::models::{UsageData, UsageSection};
+    let data = AppUsageData::from_iter([(
+        ProviderId::Codex,
+        UsageData {
+            session: UsageSection {
+                available: true,
+                ..Default::default()
+            },
+            weekly: UsageSection {
+                available: true,
+                percentage: 83.0,
+                resets_at: None,
+            },
+            ..Default::default()
+        },
+    )]);
+    let context = DataContext::from_usage(Some(&data), &Canvas::default());
+    for name in ["codex", "active"] {
+        assert_eq!(context.get(&format!("{name}.session.available")), Some(1.0));
+        assert_eq!(
+            context.get(&format!("{name}.session.percentage")),
+            Some(0.0)
+        );
+        assert_eq!(context.get(&format!("{name}.weekly.available")), Some(1.0));
+        assert_eq!(
+            context.get(&format!("{name}.weekly.percentage")),
+            Some(83.0)
+        );
+    }
 }
 
 #[test]
@@ -1921,6 +3048,557 @@ fn credit_badges_abbreviate_a_balance_too_wide_for_the_tray() {
 }
 
 #[test]
+fn countdown_display_values_invert_usage_without_moving_the_thresholds() {
+    use crate::models::{CreditsSection, UsageData, UsageSection};
+
+    let usage = AppUsageData::from_iter([(
+        ProviderId::Claude,
+        UsageData {
+            session: UsageSection {
+                available: true,
+                percentage: 25.0,
+                resets_at: None,
+            },
+            weekly: UsageSection {
+                available: true,
+                percentage: 60.0,
+                resets_at: None,
+            },
+            credits: Some(CreditsSection {
+                percentage: 40.0,
+                remaining: 24.1,
+                total: 40.83,
+            }),
+            ..Default::default()
+        },
+    )]);
+    let canvas = Canvas::default();
+    let context = |countdown: bool| {
+        DataContext::from_usage_with_runtime(
+            Some(&usage),
+            &canvas,
+            ThemeRuntime::default().with_countdown(countdown),
+        )
+    };
+
+    let counting_up = context(false);
+    assert_eq!(counting_up.get("display.countdown"), Some(0.0));
+    assert_eq!(counting_up.get("claude.session.display"), Some(25.0));
+    assert_eq!(counting_up.get("claude.weekly.display"), Some(60.0));
+    assert_eq!(counting_up.get("claude.credits.display"), Some(40.0));
+    assert_eq!(counting_up.get("claude.headline.display"), Some(40.0));
+    assert_eq!(
+        format_template("{claude.session:usage_line}", &counting_up),
+        "25%"
+    );
+
+    let counting_down = context(true);
+    assert_eq!(counting_down.get("display.countdown"), Some(1.0));
+    assert_eq!(counting_down.get("claude.session.display"), Some(75.0));
+    assert_eq!(counting_down.get("claude.weekly.display"), Some(40.0));
+    assert_eq!(counting_down.get("claude.credits.display"), Some(60.0));
+    assert_eq!(counting_down.get("claude.headline.display"), Some(60.0));
+    assert_eq!(
+        format_template("{claude.session.display:usage_line}", &counting_down),
+        "75%"
+    );
+
+    // Severity is what a theme colours by, so the spent share never flips.
+    for context in [counting_up, counting_down] {
+        assert_eq!(
+            format_template("{claude.session:usage_line}", &context),
+            "25%"
+        );
+        assert_eq!(
+            format_template("{claude.session:usage_badge}", &context),
+            "25%"
+        );
+        assert_eq!(context.get("claude.session.percentage"), Some(25.0));
+        assert_eq!(context.get("claude.session.remaining"), Some(75.0));
+        assert_eq!(context.get("claude.weekly.percentage"), Some(60.0));
+        assert_eq!(context.get("claude.headline.percentage"), Some(40.0));
+        assert_eq!(context.get("claude.headline.remaining"), Some(60.0));
+    }
+}
+
+#[test]
+fn classic_usage_direction_defaults_to_used_until_enabled() {
+    use crate::app_settings::SettingsFile;
+    use crate::models::{UsageData, UsageSection};
+
+    let theme = classic_theme();
+    let gauge = theme.surfaces[0]
+        .children
+        .iter()
+        .find(|object| object.id == "claude-session-segments-dark")
+        .unwrap();
+    let label = theme.surfaces[0]
+        .children
+        .iter()
+        .find(|object| object.id == "claude-session-value-dark")
+        .unwrap();
+    let SceneContent::Progress { value, .. } = &gauge.content else {
+        panic!("expected gauge")
+    };
+    let SceneContent::Text { template, .. } = &label.content else {
+        panic!("expected label")
+    };
+    let settings = SettingsFile::default();
+    assert!(!settings.usage_countdown);
+    let usage = AppUsageData::from_iter([(
+        ProviderId::Claude,
+        UsageData {
+            session: UsageSection {
+                available: true,
+                percentage: 25.0,
+                resets_at: None,
+            },
+            ..Default::default()
+        },
+    )]);
+    for (countdown, expected, text) in
+        [(settings.usage_countdown, 25.0, "25%"), (true, 75.0, "75%")]
+    {
+        let context = DataContext::from_usage_with_runtime(
+            Some(&usage),
+            &Canvas::default(),
+            ThemeRuntime::default().with_countdown(countdown),
+        );
+        assert_eq!(evaluate(&value.0, &context).unwrap(), expected);
+        assert_eq!(format_template(template, &context), text);
+    }
+}
+
+#[test]
+fn display_summaries_preserve_status_reset_formatting_and_legacy_tokens() {
+    let mut context = DataContext::from_usage(None, &Canvas::default());
+    context.insert("data.loading", 0.0);
+    context.insert("data.poll_ok", 1.0);
+    context.insert("claude.available", 1.0);
+    context.insert("claude.session.percentage", 25.0);
+    context.insert("claude.session.display", 75.0);
+    context.insert("claude.session.reset.unix", 1.0);
+    context.insert("claude.session.reset.seconds", 3_600.0);
+
+    // Explicit and legacy summaries can coexist in the same theme.
+    let template = "{claude.session:usage_line} / {claude.session.display:usage_line}";
+    assert!(validate_template(template, &context).is_empty());
+    assert_eq!(format_template(template, &context), "25% · 1h / 75% · 1h");
+    assert_eq!(
+        format_template("{claude.session.display:usage_badge}", &context),
+        "75%"
+    );
+
+    for format in ["usage_line", "usage_badge"] {
+        let token = format!("{{claude.session.display:{format}}}");
+        context.insert("data.loading", 1.0);
+        assert_eq!(format_template(&token, &context), "--");
+        context.insert("data.loading", 0.0);
+        context.insert("data.has_error", 1.0);
+        assert_eq!(format_template(&token, &context), "!");
+        context.insert("data.has_error", 0.0);
+        context.insert("claude.available", 0.0);
+        assert_eq!(format_template(&token, &context), "!");
+        context.insert("claude.available", 1.0);
+        assert_eq!(
+            format_template(&token, &context),
+            if format == "usage_line" {
+                "75% · 1h"
+            } else {
+                "75%"
+            }
+        );
+    }
+    for invalid in [
+        "claude.session.display.extra",
+        "claude.session.unknown",
+        "claude.headline.display",
+    ] {
+        assert!(format_usage_line(invalid, &context).is_none());
+    }
+}
+
+#[test]
+fn copilot_tray_badges_follow_usage_direction_and_keep_warning_thresholds() {
+    use crate::models::{UsageData, UsageSection};
+
+    for theme in [
+        classic_theme(),
+        ThemeDocument::starter(),
+        serde_json::from_str(include_str!("../themes/capsula-laranja.json")).unwrap(),
+        serde_json::from_str(include_str!("../themes/compact-fluent-quad.json")).unwrap(),
+    ] {
+        assert!(theme.validate().is_empty());
+        let surface = theme
+            .surfaces
+            .iter()
+            .find(|surface| surface.id == "copilot-tray-icon")
+            .unwrap();
+        let runtime =
+            ThemeRuntime::from_providers(ProviderSet::from_enabled([ProviderId::Copilot]));
+        let loading = DataContext::from_usage_with_runtime(None, &Canvas::default(), runtime);
+        let placeholder = surface
+            .children
+            .iter()
+            .find(|object| object.id == "copilot-tray-placeholder")
+            .unwrap();
+        assert_ne!(evaluate(&placeholder.render.0, &loading).unwrap(), 0.0);
+        let SceneContent::Text { template, .. } = &placeholder.content else {
+            panic!("Copilot placeholder must contain text");
+        };
+        assert_eq!(format_template(template, &loading), "Cp");
+
+        for spent in [
+            0.0, 5.0, 9.49, 9.5, 42.0, 90.0, 90.5, 95.0, 99.49, 99.5, 100.0,
+        ] {
+            for countdown in [false, true] {
+                let usage = AppUsageData::from_iter([(
+                    ProviderId::Copilot,
+                    UsageData {
+                        weekly: UsageSection {
+                            available: true,
+                            percentage: spent,
+                            resets_at: None,
+                        },
+                        ..Default::default()
+                    },
+                )]);
+                let context = DataContext::from_usage_with_runtime(
+                    Some(&usage),
+                    &Canvas::default(),
+                    runtime.with_countdown(countdown),
+                );
+                let badges: Vec<_> = surface
+                    .children
+                    .iter()
+                    .filter(|object| {
+                        object.id.contains("digit")
+                            && evaluate(&object.render.0, &context).unwrap() != 0.0
+                    })
+                    .collect();
+                assert_eq!(
+                    badges.len(),
+                    1,
+                    "{}: {spent}, countdown={countdown}",
+                    theme.id
+                );
+                let badge = badges[0];
+                assert_eq!(badge.id.contains("high"), spent >= 90.0);
+                let displayed = if countdown { 100.0 - spent } else { spent };
+                let SceneContent::Text {
+                    template,
+                    font_size,
+                    ..
+                } = &badge.content
+                else {
+                    panic!("Copilot badge must contain text");
+                };
+                assert_eq!(
+                    format_template(template, &context),
+                    format!("{displayed:.0}")
+                );
+                let expected_size = if displayed < 9.5 {
+                    50.0
+                } else if displayed < 99.5 {
+                    42.0
+                } else {
+                    30.0
+                };
+                assert_eq!(evaluate(&font_size.0, &context).unwrap(), expected_size);
+            }
+        }
+    }
+}
+
+#[test]
+fn the_classic_theme_shows_one_badge_digit_group_in_both_usage_directions() {
+    use crate::models::{UsageData, UsageSection};
+
+    let theme = classic_theme();
+    let percent = |value: f64| UsageSection {
+        available: true,
+        percentage: value,
+        resets_at: None,
+    };
+
+    for provider in ProviderId::ALL {
+        let surface_id = format!("{}-tray-icon", provider.descriptor().key);
+        let Some(surface) = theme
+            .surfaces
+            .iter()
+            .find(|surface| surface.id == surface_id)
+        else {
+            continue;
+        };
+        for spent in [0.0, 5.0, 42.0, 90.0, 95.0, 100.0] {
+            for countdown in [false, true] {
+                let usage = AppUsageData::from_iter([(
+                    provider,
+                    UsageData {
+                        session: percent(spent),
+                        weekly: percent(spent),
+                        ..Default::default()
+                    },
+                )]);
+                let context = DataContext::from_usage_with_runtime(
+                    Some(&usage),
+                    &Canvas::default(),
+                    ThemeRuntime::from_providers(ProviderSet::from_enabled([provider]))
+                        .with_countdown(countdown),
+                );
+                let badges: Vec<&str> = surface
+                    .children
+                    .iter()
+                    .filter(|object| {
+                        object.id.contains("digit")
+                            && !object.id.contains("credit")
+                            && evaluate(&object.render.0, &context).unwrap_or(0.0) != 0.0
+                    })
+                    .map(|object| object.id.as_str())
+                    .collect();
+                assert_eq!(
+                    badges.len(),
+                    1,
+                    "{surface_id} at {spent}% spent with countdown {countdown}: {badges:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn action_values_are_found_around_the_caret() {
+    // `source` marks the caret with `|`.
+    let at = |source: &str| {
+        let caret = source.find('|').unwrap();
+        action_value_at(&source.replace('|', ""), caret)
+    };
+    assert_eq!(at("set(self, width, |)"), Some(ActionValue::Bare));
+    assert_eq!(at("set(self.width, 1|)"), Some(ActionValue::Bare));
+    assert_eq!(
+        at("increase(\"bar\", x, round(canvas.width|) / 2)"),
+        Some(ActionValue::Bare)
+    );
+    assert_eq!(
+        at("show_dashboard(); decrease(self, y, |"),
+        Some(ActionValue::Bare),
+        "an unfinished action still has a value"
+    );
+    assert_eq!(
+        at("toggle(self, render)\nset(\"a,b\", x, |10)"),
+        Some(ActionValue::Bare),
+        "commas in a quoted layer id are not separators"
+    );
+    assert_eq!(
+        at(r#"layer_actions("set(\"bar\", width, |10)")"#),
+        Some(ActionValue::Quoted)
+    );
+    assert_eq!(at("set(self, |width, 1)"), None, "property, not value");
+    assert_eq!(at("se|t(self, width, 1)"), None);
+    assert_eq!(at("set(self, width, 1)|"), None);
+    assert_eq!(at("set(|self, 1)"), None, "the target is not a value");
+    assert_eq!(at("toggle(self, |render)"), None);
+    assert_eq!(at("open_url(\"https://|\")"), None);
+    assert_eq!(at(r#"layer_actions("toggle(self, |render)")"#), None);
+    assert_eq!(at(r#"layer_actions(|"set(self, x, 1)")"#), None);
+}
+
+#[test]
+fn compact_fluent_quad_antigravity_dual_and_solo_modes() {
+    use crate::models::{UsageData, UsageSection};
+
+    let theme: ThemeDocument =
+        serde_json::from_str(include_str!("../themes/compact-fluent-quad.json")).unwrap();
+
+    let gemini_section = UsageSection {
+        available: true,
+        percentage: 30.0,
+        resets_at: None,
+    };
+    let external_section = UsageSection {
+        available: true,
+        percentage: 70.0,
+        resets_at: None,
+    };
+
+    let mut usage = AppUsageData::default();
+    usage.insert(
+        ProviderId::Antigravity,
+        UsageData {
+            session: gemini_section.clone(),
+            weekly: gemini_section.clone(),
+            external_pool: Some(Box::new(UsageData {
+                session: external_section.clone(),
+                weekly: external_section.clone(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        },
+    );
+
+    // 1. Solo Gemini
+    {
+        let runtime =
+            ThemeRuntime::from_providers(ProviderSet::from_enabled([ProviderId::Antigravity]))
+                .with_antigravity_pools(true, false, 1.0);
+        let mut context =
+            DataContext::from_usage_with_runtime(Some(&usage), &Canvas::default(), runtime);
+        context.insert("system.dark", 1.0);
+        assert_eq!(evaluate("antigravity.dual_mode", &context).unwrap(), 0.0);
+        assert_eq!(
+            evaluate("antigravity.gemini.enabled", &context).unwrap(),
+            1.0
+        );
+        assert_eq!(
+            evaluate("antigravity.external.enabled", &context).unwrap(),
+            0.0
+        );
+
+        let find_render = |id: &str| {
+            theme.surfaces[0]
+                .children
+                .iter()
+                .find(|o| o.id == id)
+                .map(|o| evaluate(&o.render.0, &context).unwrap() != 0.0)
+                .unwrap_or(false)
+        };
+
+        assert!(find_render("antigravity-session-gemini-solo-dark"));
+        assert!(!find_render("antigravity-session-external-solo-dark"));
+        assert!(!find_render("antigravity-session-gemini-dual-dark"));
+        assert!(!find_render("antigravity-session-external-dual-dark"));
+        assert!(find_render("antigravity-session-gemini-value-dark"));
+        assert!(!find_render("antigravity-session-external-value-dark"));
+    }
+
+    // 2. Solo External
+    {
+        let runtime =
+            ThemeRuntime::from_providers(ProviderSet::from_enabled([ProviderId::Antigravity]))
+                .with_antigravity_pools(false, true, 1.0);
+        let mut context =
+            DataContext::from_usage_with_runtime(Some(&usage), &Canvas::default(), runtime);
+        context.insert("system.dark", 1.0);
+        assert_eq!(evaluate("antigravity.dual_mode", &context).unwrap(), 0.0);
+        assert_eq!(
+            evaluate("antigravity.gemini.enabled", &context).unwrap(),
+            0.0
+        );
+        assert_eq!(
+            evaluate("antigravity.external.enabled", &context).unwrap(),
+            1.0
+        );
+
+        let find_render = |id: &str| {
+            theme.surfaces[0]
+                .children
+                .iter()
+                .find(|o| o.id == id)
+                .map(|o| evaluate(&o.render.0, &context).unwrap() != 0.0)
+                .unwrap_or(false)
+        };
+
+        assert!(!find_render("antigravity-session-gemini-solo-dark"));
+        assert!(find_render("antigravity-session-external-solo-dark"));
+        assert!(!find_render("antigravity-session-gemini-dual-dark"));
+        assert!(!find_render("antigravity-session-external-dual-dark"));
+        assert!(!find_render("antigravity-session-gemini-value-dark"));
+        assert!(find_render("antigravity-session-external-value-dark"));
+    }
+
+    // 3. Dual Mode Crossfade
+    {
+        // At opacity 1.0 (Gemini holding)
+        let runtime =
+            ThemeRuntime::from_providers(ProviderSet::from_enabled([ProviderId::Antigravity]))
+                .with_antigravity_pools(true, true, 1.0);
+        let mut context =
+            DataContext::from_usage_with_runtime(Some(&usage), &Canvas::default(), runtime);
+        context.insert("system.dark", 1.0);
+        assert_eq!(evaluate("antigravity.dual_mode", &context).unwrap(), 1.0);
+
+        let find_render = |id: &str| {
+            theme.surfaces[0]
+                .children
+                .iter()
+                .find(|o| o.id == id)
+                .map(|o| evaluate(&o.render.0, &context).unwrap() != 0.0)
+                .unwrap_or(false)
+        };
+
+        assert!(!find_render("antigravity-session-gemini-solo-dark"));
+        assert!(!find_render("antigravity-session-external-solo-dark"));
+        assert!(find_render("antigravity-session-gemini-dual-dark"));
+        assert!(find_render("antigravity-session-external-dual-dark"));
+        assert!(find_render("antigravity-session-gemini-value-dark"));
+        assert!(!find_render("antigravity-session-external-value-dark"));
+
+        // At opacity 0.5 (Mid-transition)
+        let runtime_mid =
+            ThemeRuntime::from_providers(ProviderSet::from_enabled([ProviderId::Antigravity]))
+                .with_antigravity_pools(true, true, 0.5);
+        let mut context_mid =
+            DataContext::from_usage_with_runtime(Some(&usage), &Canvas::default(), runtime_mid);
+        context_mid.insert("system.dark", 1.0);
+        let find_render_mid = |id: &str| {
+            theme.surfaces[0]
+                .children
+                .iter()
+                .find(|o| o.id == id)
+                .map(|o| evaluate(&o.render.0, &context_mid).unwrap() != 0.0)
+                .unwrap_or(false)
+        };
+        assert!(find_render_mid("antigravity-session-gemini-value-dark"));
+        assert!(find_render_mid("antigravity-session-external-value-dark"));
+
+        // At opacity 0.0 (External holding)
+        let runtime_ext =
+            ThemeRuntime::from_providers(ProviderSet::from_enabled([ProviderId::Antigravity]))
+                .with_antigravity_pools(true, true, 0.0);
+        let mut context_ext =
+            DataContext::from_usage_with_runtime(Some(&usage), &Canvas::default(), runtime_ext);
+        context_ext.insert("system.dark", 1.0);
+        let find_render_ext = |id: &str| {
+            theme.surfaces[0]
+                .children
+                .iter()
+                .find(|o| o.id == id)
+                .map(|o| evaluate(&o.render.0, &context_ext).unwrap() != 0.0)
+                .unwrap_or(false)
+        };
+        assert!(!find_render_ext("antigravity-session-gemini-value-dark"));
+        assert!(find_render_ext("antigravity-session-external-value-dark"));
+    }
+}
+
+#[test]
+fn missing_antigravity_external_pool_draws_an_empty_gauge() {
+    use crate::models::{UsageData, UsageSection};
+
+    let usage = AppUsageData::from_iter([(
+        ProviderId::Antigravity,
+        UsageData {
+            session: UsageSection {
+                available: true,
+                percentage: 25.0,
+                resets_at: None,
+            },
+            ..Default::default()
+        },
+    )]);
+    let context = DataContext::from_usage_with_runtime(
+        Some(&usage),
+        &Canvas::default(),
+        ThemeRuntime::from_providers(ProviderSet::from_enabled([ProviderId::Antigravity]))
+            .with_countdown(true),
+    );
+    let value = |expression: &str| evaluate(expression, &context).unwrap();
+    assert_eq!(value("antigravity.gemini.session.display"), 75.0);
+    assert_eq!(value("antigravity.gemini.weekly.display"), 0.0);
+    assert_eq!(value("antigravity.external.session.display"), 0.0);
+}
+
+#[test]
 fn paint_follows_the_system_accent_when_asked_for_it() {
     let mut context = DataContext::default();
     context.insert("system.accent.r", 219.0);
@@ -1952,4 +3630,52 @@ fn a_plain_hex_paint_is_unaffected_by_the_accent_token() {
     let resolved = Paint::new("#D97757FF").resolve(&context);
 
     assert_eq!((resolved.r, resolved.g, resolved.b), (0xD9, 0x77, 0x57));
+}
+
+#[test]
+fn capsule_defaults_and_provider_layouts_survive_upstream_sync() {
+    assert_eq!(ThemeDocument::starter().id, CAPSULA_THEME_ID);
+    for source in [
+        include_str!("../themes/capsula.json"),
+        include_str!("../themes/capsula-laranja.json"),
+    ] {
+        let mut theme: ThemeDocument = serde_json::from_str(source).unwrap();
+        theme.prepare_runtime();
+        assert!(theme.validate().is_empty(), "{:?}", theme.validate());
+        for mask in 1..(1 << ProviderId::ALL.len()) {
+            let providers =
+                ProviderSet::from_enabled(ProviderId::ALL.into_iter().enumerate().filter_map(
+                    |(index, provider)| (mask & (1 << index) != 0).then_some(provider),
+                ));
+            let runtime = ThemeRuntime::from_providers(providers);
+            let (width, height) = resolve_surface_size(&theme, 0, None, runtime);
+            for (index, object) in theme.surfaces[0].children.iter().enumerate() {
+                if object.parent.as_deref() == Some("provider-row") {
+                    if let Some((x, y, w, h)) =
+                        resolve_object_bounds_with_runtime(&theme, 0, index, None, runtime)
+                    {
+                        assert!(
+                            x >= 0.0 && x + w <= width as f64,
+                            "{} mask={mask}: {}+{} > {}",
+                            object.id,
+                            x,
+                            w,
+                            width
+                        );
+                        assert!(y >= 0.0 && y + h <= height as f64, "{}", object.id);
+                    }
+                }
+            }
+        }
+        for provider in ProviderId::ALL {
+            let root_id = format!("{}-provider", provider.descriptor().key);
+            assert!(
+                theme.surfaces[0]
+                    .children
+                    .iter()
+                    .any(|object| object.id == root_id),
+                "{root_id}"
+            );
+        }
+    }
 }

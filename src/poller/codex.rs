@@ -1,5 +1,5 @@
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -27,7 +27,19 @@ struct CodexTokenData {
 #[derive(Deserialize)]
 pub(super) struct CodexUsageResponse {
     rate_limit: Option<Option<Box<CodexRateLimitDetails>>>,
+    spend_control: Option<CodexSpendControl>,
     credits: Option<Option<Box<CodexCredits>>>,
+}
+
+#[derive(Deserialize)]
+struct CodexSpendControl {
+    individual_limit: Option<CodexIndividualLimit>,
+}
+
+#[derive(Deserialize)]
+struct CodexIndividualLimit {
+    used_percent: Option<f64>,
+    reset_at: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -71,7 +83,12 @@ pub(super) struct CodexRateLimitWindow {
 const WEEKLY_WINDOW_THRESHOLD_SECONDS: i64 = 86_400;
 
 pub(super) fn poll_codex() -> Result<UsageData, PollError> {
-    let creds = match read_codex_credentials() {
+    let path = codex_auth_path().ok_or(PollError::NoCredentials)?;
+    poll_account(&path)
+}
+
+pub(super) fn poll_account(path: &Path) -> Result<UsageData, PollError> {
+    let creds = match read_codex_credentials_at(path) {
         Some(creds) => creds,
         None => {
             diagnose::log("Codex usage poll failed: no Codex credentials found");
@@ -79,20 +96,29 @@ pub(super) fn poll_codex() -> Result<UsageData, PollError> {
         }
     };
 
-    match fetch_codex_usage(&creds.access_token, creds.account_id.as_deref()) {
+    match fetch_codex_usage_at(&creds.access_token, creds.account_id.as_deref(), Some(path)) {
         Ok(data) => Ok(data),
         Err(PollError::AuthRequired) => {
-            cli_refresh_codex_token();
-            let refreshed = read_codex_credentials().ok_or(PollError::TokenExpired)?;
-            fetch_codex_usage(&refreshed.access_token, refreshed.account_id.as_deref())
+            if path.file_name().is_some_and(|name| name == "auth.json") {
+                if let Some(directory) = path.parent() {
+                    cli_refresh_codex_token(directory);
+                }
+            }
+            let refreshed = read_codex_credentials_at(path).ok_or(PollError::TokenExpired)?;
+            fetch_codex_usage_at(
+                &refreshed.access_token,
+                refreshed.account_id.as_deref(),
+                Some(path),
+            )
         }
         Err(error) => Err(error),
     }
 }
 
-pub(super) fn fetch_codex_usage(
+fn fetch_codex_usage_at(
     token: &str,
     account_id: Option<&str>,
+    path: Option<&Path>,
 ) -> Result<UsageData, PollError> {
     let account_id = account_id.filter(|value| !value.is_empty());
     let agent = build_agent()?;
@@ -105,7 +131,7 @@ pub(super) fn fetch_codex_usage(
         request = request.header("ChatGPT-Account-Id", account_id);
     }
 
-    let mut resp = match request.call() {
+    let mut resp = match request.call().and_then(super::check_http_status) {
         Ok(resp) => resp,
         Err(ureq::Error::StatusCode(code)) if code == 401 || code == 403 => {
             diagnose::log(format!(
@@ -127,46 +153,103 @@ pub(super) fn fetch_codex_usage(
         }
     };
 
-    codex_usage_from_response(response, account_id).ok_or(PollError::RequestFailed)
+    codex_usage_from_response_at(response, account_id, path).ok_or(PollError::RequestFailed)
 }
 
+#[cfg(test)]
 pub(super) fn codex_usage_from_response(
     response: CodexUsageResponse,
     account_id: Option<&str>,
 ) -> Option<UsageData> {
+    codex_usage_from_response_at(response, account_id, None)
+}
+
+fn codex_usage_from_response_at(
+    response: CodexUsageResponse,
+    account_id: Option<&str>,
+    path: Option<&Path>,
+) -> Option<UsageData> {
     let credits = response.credits.flatten();
-    let details = *response.rate_limit.flatten()?;
+    let details = response.rate_limit.flatten().map(|details| *details);
+    let monthly = response
+        .spend_control
+        .and_then(|spend_control| spend_control.individual_limit)
+        .as_ref()
+        .and_then(codex_section_from_individual_limit);
+    if details.is_none() && monthly.is_none() {
+        return None;
+    }
     let mut data = UsageData::default();
+    let limit_reached = details
+        .as_ref()
+        .is_some_and(|details| details.limit_reached);
 
     // Assign by window length, not by slot. Codex has shipped the weekly
     // allowance in `primary_window` with `secondary_window` empty while the
     // five-hour window is switched off, so trusting the slot order puts a
     // weekly figure in the session bar.
-    for (window, default_is_weekly) in [
-        (details.primary_window.flatten(), false),
-        (details.secondary_window.flatten(), true),
-    ]
-    .into_iter()
-    .filter_map(|(window, default_is_weekly)| window.map(|window| (window, default_is_weekly)))
-    {
-        let section = codex_section_from_window(&window);
-        if window_is_weekly(&window).unwrap_or(default_is_weekly) {
-            data.weekly = section;
-        } else {
-            data.session = section;
+    if let Some(details) = details {
+        for (window, default_is_weekly) in [
+            (details.primary_window.flatten(), false),
+            (details.secondary_window.flatten(), true),
+        ]
+        .into_iter()
+        .filter_map(|(window, default_is_weekly)| window.map(|window| (window, default_is_weekly)))
+        {
+            let section = codex_section_from_window(&window);
+            if window_is_weekly(&window).unwrap_or(default_is_weekly) {
+                data.weekly = section;
+            } else {
+                data.session = section;
+            }
         }
     }
 
+    if let Some(monthly) = monthly {
+        if !data.weekly.available {
+            data.weekly = monthly.clone();
+            data.weekly_label = Some("30d".to_string());
+        }
+        data.monthly = Some(monthly);
+    }
+
     data.credits = credits.and_then(|credits| {
-        let previous = app_settings::load_codex_credits();
-        let (state, section) = codex_credits(previous, &credits, details.limit_reached, account_id);
-        if let Err(error) = app_settings::save_codex_credits(&state) {
+        let state_path = path.map(|path| {
+            app_settings::app_data_directory().join(credit_state_file_name(path, account_id))
+        });
+        let previous = match &state_path {
+            Some(path) => std::fs::read(path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .or_else(|| {
+                    app_settings::load_codex_credits().filter(|state| {
+                        account_id.is_some() && state.account_id.as_deref() == account_id
+                    })
+                }),
+            None => app_settings::load_codex_credits(),
+        };
+        let (state, section) = codex_credits(previous, &credits, limit_reached, account_id);
+        let saved = match &state_path {
+            Some(path) => app_settings::write_json_atomic(path, &state),
+            None => app_settings::save_codex_credits(&state),
+        };
+        if let Err(error) = saved {
             diagnose::log(format!("unable to persist Codex credit baseline: {error}"));
         }
         section
     });
 
     Some(data)
+}
+
+fn credit_state_file_name(path: &Path, account_id: Option<&str>) -> String {
+    format!(
+        "codex-credits-{}.json",
+        crate::accounts::fingerprint(&format!(
+            "{}|{account_id:?}",
+            crate::accounts::source_key(path)
+        ))
+    )
 }
 
 /// Tracks the balance across polls and turns it into a gauge.
@@ -240,9 +323,19 @@ fn window_is_weekly(window: &CodexRateLimitWindow) -> Option<bool> {
 
 pub(super) fn codex_section_from_window(window: &CodexRateLimitWindow) -> UsageSection {
     UsageSection {
+        available: true,
         percentage: window.used_percent,
         resets_at: unix_to_system_time(Some(window.reset_at)),
     }
+}
+
+fn codex_section_from_individual_limit(limit: &CodexIndividualLimit) -> Option<UsageSection> {
+    let percentage = limit.used_percent?.clamp(0.0, 100.0);
+    percentage.is_finite().then(|| UsageSection {
+        available: true,
+        percentage,
+        resets_at: unix_to_system_time(limit.reset_at),
+    })
 }
 
 pub(super) fn credential_watch_snapshot() -> Vec<String> {
@@ -256,7 +349,7 @@ pub(super) fn credential_watch_snapshot() -> Vec<String> {
                 .modified()
                 .ok()
                 .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-                .map(|value| value.as_secs())
+                .map(|value| value.as_nanos())
                 .unwrap_or(0);
             format!("{key}|present|{}|{modified}", metadata.len())
         }
@@ -265,16 +358,21 @@ pub(super) fn credential_watch_snapshot() -> Vec<String> {
     vec![signature]
 }
 
-fn codex_auth_path() -> Option<PathBuf> {
-    if let Some(codex_home) = std::env::var_os("CODEX_HOME").map(PathBuf::from) {
+pub(super) fn codex_auth_path() -> Option<PathBuf> {
+    if std::env::var_os("CODEX_HOME").is_some_and(|value| !value.is_empty()) {
+        let codex_home =
+            crate::accounts::environment_directory(crate::providers::ProviderId::Codex)?;
         return Some(codex_home.join("auth.json"));
     }
-    Some(dirs::home_dir()?.join(".codex").join("auth.json"))
+    Some(
+        crate::known_folders::home_dir()?
+            .join(".codex")
+            .join("auth.json"),
+    )
 }
 
-fn read_codex_credentials() -> Option<CodexTokenData> {
-    let auth_path = codex_auth_path()?;
-    let content = match std::fs::read_to_string(&auth_path) {
+fn read_codex_credentials_at(auth_path: &Path) -> Option<CodexTokenData> {
+    let content = match std::fs::read_to_string(auth_path) {
         Ok(content) => content,
         Err(error) => {
             diagnose::log_error(
@@ -288,10 +386,11 @@ fn read_codex_credentials() -> Option<CodexTokenData> {
         }
     };
     let auth: CodexAuthFile = serde_json::from_str(&content).ok()?;
-    auth.tokens.filter(|tokens| !tokens.access_token.is_empty())
+    auth.tokens
+        .filter(|tokens| !tokens.access_token.trim().is_empty())
 }
 
-fn cli_refresh_codex_token() {
+fn cli_refresh_codex_token(directory: &Path) {
     let codex_path = resolve_windows_codex_path();
     let is_cmd = codex_path.to_lowercase().ends_with(".cmd");
     let is_ps1 = codex_path.to_lowercase().ends_with(".ps1");
@@ -320,6 +419,7 @@ fn cli_refresh_codex_token() {
         command
     };
     command
+        .env("CODEX_HOME", directory)
         .creation_flags(CREATE_NO_WINDOW)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -390,10 +490,28 @@ fn wait_for_refresh(child: &mut std::process::Child) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn credit_history_is_scoped_to_source_and_account() {
+        let first = Path::new("C:\\account-tests\\work\\auth.json");
+        let second = Path::new("C:\\account-tests\\personal\\auth.json");
+        assert_ne!(
+            credit_state_file_name(first, Some("work")),
+            credit_state_file_name(second, Some("work"))
+        );
+        assert_ne!(
+            credit_state_file_name(first, Some("work")),
+            credit_state_file_name(first, Some("personal"))
+        );
+        assert_ne!(
+            credit_state_file_name(first, None),
+            credit_state_file_name(second, None)
+        );
+    }
+
     fn usage_from_json(json: &str) -> UsageData {
         let response: CodexUsageResponse =
             serde_json::from_str(json).expect("the fixture should deserialize");
-        codex_usage_from_response(response, None).expect("the fixture should carry rate limits")
+        codex_usage_from_response(response, None).expect("the fixture should carry usage")
     }
 
     fn credits(balance: &str, has_credits: bool) -> CodexCredits {
@@ -542,6 +660,24 @@ mod tests {
         assert_eq!(data.session.percentage, 0.0);
         assert!(data.weekly.resets_at.is_some());
         assert!(data.session.resets_at.is_none());
+        assert!(data.weekly.available);
+        assert!(!data.session.available);
+    }
+
+    #[test]
+    fn a_reported_zero_usage_window_is_available_without_a_usable_reset() {
+        let data = usage_from_json(
+            r#"{
+            "rate_limit": {
+                "primary_window": {"used_percent":0,"limit_window_seconds":18000,"reset_at":-1},
+                "secondary_window": null
+            }
+        }"#,
+        );
+        assert!(data.session.available);
+        assert_eq!(data.session.percentage, 0.0);
+        assert!(data.session.resets_at.is_none());
+        assert!(!data.weekly.available);
     }
 
     #[test]
@@ -595,5 +731,140 @@ mod tests {
 
         assert_eq!(data.session.percentage, 20.0);
         assert_eq!(data.weekly.percentage, 80.0);
+    }
+
+    #[test]
+    fn an_individual_spend_limit_fills_the_monthly_and_long_windows() {
+        let data = usage_from_json(
+            r#"{
+                "rate_limit": null,
+                "spend_control": {
+                    "individual_limit": {
+                        "used_percent": 24,
+                        "reset_at": 1793491201
+                    }
+                }
+            }"#,
+        );
+
+        assert_eq!(data.weekly.percentage, 24.0);
+        assert!(!data.session.available);
+        assert_eq!(
+            data.weekly.resets_at,
+            Some(UNIX_EPOCH + Duration::from_secs(1793491201))
+        );
+        assert_eq!(data.weekly_label.as_deref(), Some("30d"));
+        assert_eq!(data.monthly.as_ref(), Some(&data.weekly));
+    }
+
+    #[test]
+    fn a_legacy_weekly_window_remains_the_selected_long_window() {
+        let data = usage_from_json(
+            r#"{
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 20,
+                        "limit_window_seconds": 604800,
+                        "reset_at": 1787198224
+                    }
+                },
+                "spend_control": {
+                    "individual_limit": {
+                        "used_percent": 24,
+                        "reset_at": 1793491201
+                    }
+                }
+            }"#,
+        );
+
+        assert_eq!(data.weekly.percentage, 20.0);
+        assert_eq!(data.weekly_label, None);
+        assert_eq!(data.monthly.unwrap().percentage, 24.0);
+    }
+
+    #[test]
+    fn an_incomplete_individual_limit_does_not_hide_legacy_windows() {
+        let data = usage_from_json(
+            r#"{
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 42,
+                        "limit_window_seconds": 604800,
+                        "reset_at": 1787198224
+                    }
+                },
+                "spend_control": {"individual_limit": {}}
+            }"#,
+        );
+
+        assert_eq!(data.weekly.percentage, 42.0);
+        assert_eq!(data.monthly, None);
+    }
+
+    #[test]
+    fn missing_or_null_individual_limits_do_not_fabricate_usage() {
+        for json in [
+            r#"{}"#,
+            r#"{"rate_limit":null,"spend_control":null}"#,
+            r#"{"spend_control":{}}"#,
+            r#"{"spend_control":{"individual_limit":null}}"#,
+            r#"{"spend_control":{"individual_limit":{}}}"#,
+            r#"{"spend_control":{"individual_limit":{"used_percent":null,"reset_at":1793491201}}}"#,
+            r#"{"spend_control":{"individual_limit":{"reset_at":1793491201}}}"#,
+        ] {
+            let response = serde_json::from_str(json).expect("fixture should deserialize");
+            assert!(
+                codex_usage_from_response(response, None).is_none(),
+                "{json}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_monthly_fallback_keeps_the_legacy_session_window() {
+        let data = usage_from_json(
+            r#"{
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 42,
+                        "limit_window_seconds": 18000,
+                        "reset_at": 1787100000
+                    },
+                    "secondary_window": null
+                },
+                "spend_control": {
+                    "individual_limit": {"used_percent": 24, "reset_at": 1793491201}
+                }
+            }"#,
+        );
+
+        assert!(data.session.available);
+        assert_eq!(data.session.percentage, 42.0);
+        assert_eq!(
+            data.session.resets_at,
+            Some(UNIX_EPOCH + Duration::from_secs(1787100000))
+        );
+        assert_eq!(data.weekly.percentage, 24.0);
+        assert_eq!(data.weekly_label.as_deref(), Some("30d"));
+        assert_eq!(data.monthly.as_ref(), Some(&data.weekly));
+    }
+
+    #[test]
+    fn an_idle_individual_limit_is_available_without_a_reset_time() {
+        for limit in [
+            r#"{"used_percent":0}"#,
+            r#"{"used_percent":0,"reset_at":null}"#,
+            r#"{"used_percent":0,"reset_at":-1}"#,
+        ] {
+            let data = usage_from_json(&format!(
+                r#"{{"spend_control":{{"individual_limit":{limit}}}}}"#
+            ));
+
+            assert!(data.weekly.available);
+            assert_eq!(data.weekly.percentage, 0.0);
+            assert!(data.weekly.resets_at.is_none());
+            assert_eq!(data.weekly_label.as_deref(), Some("30d"));
+            assert_eq!(data.monthly.as_ref(), Some(&data.weekly));
+        }
     }
 }

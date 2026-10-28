@@ -16,14 +16,18 @@ use std::path::{Path, PathBuf};
 
 use crate::diagnose;
 
-const TOKEN_CACHE_KEY: &str = "oauth:tokenCache";
+/// Newest layout first. The desktop app migrated its cache to
+/// `oauth:tokenCacheV2` and leaves the older `oauth:tokenCache` key in place,
+/// so both are tried and the first that yields a usable token wins.
+const TOKEN_CACHE_KEYS: &[&str] = &["oauth:tokenCacheV2", "oauth:tokenCache"];
 const DPAPI_KEY_PREFIX: &[u8] = b"DPAPI";
 const OS_CRYPT_PREFIX: &[u8] = b"v10";
 const GCM_NONCE_LEN: usize = 12;
 const GCM_TAG_LEN: usize = 16;
 /// Desktop entries are keyed `"<install>:<user>:<base url>:<scopes>"`; the
-/// inference scope marks the token the usage endpoint accepts.
+/// usage endpoint needs both inference and profile scopes.
 const INFERENCE_SCOPE: &str = "user:inference";
+const PROFILE_SCOPE: &str = "user:profile";
 const BCRYPT_INIT_AUTH_MODE_INFO_VERSION: u32 = 1;
 
 pub(super) struct DesktopToken {
@@ -31,8 +35,65 @@ pub(super) struct DesktopToken {
     pub(super) expires_at: Option<i64>,
 }
 
-pub(super) fn config_path() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("Claude").join("config.json"))
+pub(super) fn config_paths() -> Vec<PathBuf> {
+    data_directories()
+        .into_iter()
+        .map(|path| path.join("config.json"))
+        .collect()
+}
+
+pub(super) fn data_directories() -> Vec<PathBuf> {
+    data_directories_in(
+        crate::known_folders::roaming_app_data_dir().as_deref(),
+        crate::known_folders::local_app_data_dir().as_deref(),
+    )
+}
+
+/// Prefer the migrated desktop data over legacy caches left behind by updates.
+/// Keep ordinary and MSIX paths for older installs, with deterministic discovery.
+/// Missing config files remain watchable candidates.
+fn data_directories_in(roaming: Option<&Path>, local: Option<&Path>) -> Vec<PathBuf> {
+    let mut paths = local
+        .map(|path| publisher_directories_in(&path.join("Claude-Data"), "claude_"))
+        .unwrap_or_default();
+    paths.extend(roaming.map(|path| path.join("Claude")));
+    if let Some(local) = local {
+        paths.extend(
+            publisher_directories_in(&local.join("Packages"), "Claude_")
+                .into_iter()
+                .map(|path| path.join("LocalCache").join("Roaming").join("Claude")),
+        );
+    }
+    paths
+}
+
+fn publisher_directories_in(root: &Path, prefix: &str) -> Vec<PathBuf> {
+    let mut paths: Vec<_> = std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter(|entry| {
+            entry.file_name().to_str().is_some_and(|name| {
+                name.strip_prefix(prefix).is_some_and(|publisher| {
+                    publisher.len() == 13
+                        && publisher
+                            .bytes()
+                            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+                })
+            })
+        })
+        .map(|entry| entry.path())
+        .collect();
+    let preferred = format!("{prefix}pzs8sxrjxfjjc");
+    paths.sort_by_key(|path| {
+        (
+            path.file_name()
+                .is_none_or(|name| name != preferred.as_str()),
+            path.clone(),
+        )
+    });
+    paths
 }
 
 fn local_state_path(config_path: &Path) -> PathBuf {
@@ -56,15 +117,31 @@ pub(super) fn read_token(config_path: &Path) -> Option<DesktopToken> {
         }
     };
 
-    let cache = token_cache_value(&config)?;
-    let key = os_crypt_key(&local_state_path(config_path))?;
-    let plaintext = decrypt_os_crypt_value(&cache, &key)?;
-    let plaintext = String::from_utf8(plaintext).ok()?;
-    let token = select_token(&plaintext);
-    if token.is_none() {
-        diagnose::log("Claude desktop token cache held no usable inference token");
+    let caches = token_cache_values(&config);
+    if caches.is_empty() {
+        diagnose::log("Claude desktop config held no OAuth token cache");
+        return None;
     }
-    token
+    let key = os_crypt_key(&local_state_path(config_path))?;
+
+    for (name, cache) in &caches {
+        let Some(plaintext) = decrypt_os_crypt_value(cache, &key) else {
+            diagnose::log(format!("unable to decrypt Claude desktop {name}"));
+            continue;
+        };
+        let Ok(plaintext) = String::from_utf8(plaintext) else {
+            diagnose::log(format!("Claude desktop {name} was not valid UTF-8"));
+            continue;
+        };
+        if let Some(token) = select_token(&plaintext) {
+            return Some(token);
+        }
+        diagnose::log(format!(
+            "Claude desktop {name} held no usable inference token"
+        ));
+    }
+
+    None
 }
 
 /// Signature over the encrypted cache rather than the file's mtime: the
@@ -72,48 +149,65 @@ pub(super) fn read_token(config_path: &Path) -> Option<DesktopToken> {
 /// placement, and that must not read as a credential change.
 pub(super) fn watch_signature(config_path: &Path) -> String {
     let key = format!("desktop:{}", config_path.display());
-    match std::fs::read_to_string(config_path)
+    let caches = std::fs::read_to_string(config_path)
         .ok()
-        .and_then(|config| token_cache_value(&config))
-    {
-        Some(cache) => format!("{key}|present|{}", fnv1a(cache.as_bytes())),
-        None => format!("{key}|missing"),
+        .map(|config| token_cache_values(&config))
+        .unwrap_or_default();
+    if caches.is_empty() {
+        return format!("{key}|missing");
     }
+
+    let mut signature = format!("{key}|present");
+    for (name, cache) in caches {
+        signature.push_str(&format!("|{name}:{}", fnv1a(cache.as_bytes())));
+    }
+    signature
 }
 
-fn token_cache_value(config: &str) -> Option<String> {
-    let json: serde_json::Value = serde_json::from_str(config).ok()?;
-    Some(json.get(TOKEN_CACHE_KEY)?.as_str()?.to_string())
+/// Every token cache the config carries, newest layout first.
+fn token_cache_values(config: &str) -> Vec<(&'static str, String)> {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(config) else {
+        return Vec::new();
+    };
+    TOKEN_CACHE_KEYS
+        .iter()
+        .filter_map(|key| {
+            let value = json.get(*key)?.as_str()?;
+            (!value.is_empty()).then(|| (*key, value.to_string()))
+        })
+        .collect()
 }
 
-/// Picks the freshest entry that carries the inference scope, falling back to
-/// the freshest entry of any scope so a future key layout still resolves.
+/// Prefer both scopes required for usage, then inference-only, then unknown
+/// layouts for compatibility. Expiry breaks ties within each scope group.
 fn select_token(plaintext: &str) -> Option<DesktopToken> {
     let json: serde_json::Value = serde_json::from_str(plaintext).ok()?;
     let entries = json.as_object()?;
 
-    let mut best: Option<(bool, i64, DesktopToken)> = None;
+    let mut best: Option<((bool, bool, i64), DesktopToken)> = None;
     for (key, entry) in entries {
         let Some(access_token) = entry.get("token").and_then(|value| value.as_str()) else {
             continue;
         };
-        if access_token.is_empty() {
+        if access_token.trim().is_empty() {
             continue;
         }
         let expires_at = entry.get("expiresAt").and_then(|value| value.as_i64());
+        let scopes = entry_scopes(key);
+        let inference = scopes.contains(&INFERENCE_SCOPE);
         let rank = (
-            key.contains(INFERENCE_SCOPE),
+            inference && scopes.contains(&PROFILE_SCOPE),
+            inference,
             expires_at.unwrap_or(i64::MIN),
         );
         if best
             .as_ref()
-            .is_some_and(|(scoped, expiry, _)| (*scoped, *expiry) >= rank)
+            .is_some_and(|(best_rank, _)| *best_rank >= rank)
         {
             continue;
         }
         best = Some((
-            rank.0,
-            rank.1,
+            rank,
             DesktopToken {
                 access_token: access_token.to_string(),
                 expires_at,
@@ -121,7 +215,18 @@ fn select_token(plaintext: &str) -> Option<DesktopToken> {
         ));
     }
 
-    best.map(|(_, _, token)| token)
+    best.map(|(_, token)| token)
+}
+
+fn entry_scopes(key: &str) -> Vec<&str> {
+    let mut words = key.split_whitespace();
+    let first = words.next().unwrap_or_default();
+    // The first scope follows the ids and base URL and contains one colon.
+    let first_scope = first
+        .rmatch_indices(':')
+        .nth(1)
+        .map(|(index, _)| &first[index + 1..]);
+    first_scope.into_iter().chain(words).collect()
 }
 
 fn os_crypt_key(local_state_path: &Path) -> Option<Vec<u8>> {
@@ -444,6 +549,104 @@ mod tests {
     use super::*;
 
     #[test]
+    fn discovers_regular_and_store_installs_in_stable_order() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        let roaming = root.join("Roaming");
+        let local = root.join("Local");
+        let packages = local.join("Packages");
+        for name in [
+            "Claude_aaaaaaaaaaaaa",
+            "Claude_pzs8sxrjxfjjc",
+            "Claude_short",
+            "Other_pzs8sxrjxfjjc",
+        ] {
+            std::fs::create_dir_all(packages.join(name)).unwrap();
+        }
+        // A file with a plausible package name is not an installation.
+        std::fs::write(packages.join("Claude_bbbbbbbbbbbbb"), "").unwrap();
+        assert_eq!(
+            data_directories_in(Some(&roaming), Some(&local)),
+            vec![
+                roaming.join("Claude"),
+                packages.join("Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude"),
+                packages.join("Claude_aaaaaaaaaaaaa/LocalCache/Roaming/Claude"),
+            ]
+        );
+        assert_eq!(
+            data_directories_in(Some(&roaming), Some(&root.join("absent"))),
+            vec![roaming.join("Claude")]
+        );
+        assert!(data_directories_in(None, None).is_empty());
+    }
+
+    #[test]
+    fn discovers_migrated_data_before_legacy_installs() {
+        let temporary = tempfile::tempdir().unwrap();
+        let roaming = temporary.path().join("Roaming");
+        let local = temporary.path().join("Local");
+        let migrated = local.join("Claude-Data");
+        for name in [
+            "claude_zzzzzzzzzzzzz",
+            "claude_aaaaaaaaaaaaa",
+            "claude_pzs8sxrjxfjjc",
+            "claude_short",
+            "claude_aaaaaaaaaaaaaa",
+            "claude_aaaaaaaaaaaaA",
+            "claude_aaaaaaaaaaaa-",
+            "claude_aaaaaaaaaaaaé",
+            "Claude_ccccccccccccc",
+            "other_pzs8sxrjxfjjc",
+        ] {
+            std::fs::create_dir_all(migrated.join(name)).unwrap();
+        }
+        std::fs::write(migrated.join("claude_bbbbbbbbbbbbb"), "").unwrap();
+        let expected = vec![
+            migrated.join("claude_pzs8sxrjxfjjc"),
+            migrated.join("claude_aaaaaaaaaaaaa"),
+            migrated.join("claude_zzzzzzzzzzzzz"),
+        ];
+        // Migrated-only installs do not require an old package directory or config.
+        assert_eq!(data_directories_in(None, Some(&local)), expected);
+        let legacy_store = local.join("Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude");
+        std::fs::create_dir_all(&legacy_store).unwrap();
+        let expected: Vec<_> = expected
+            .into_iter()
+            .chain([roaming.join("Claude"), legacy_store])
+            .collect();
+        assert_eq!(data_directories_in(Some(&roaming), Some(&local)), expected);
+        // Local State must be read alongside each discovered config.
+        let config = expected[0].join("config.json");
+        assert_eq!(local_state_path(&config), expected[0].join("Local State"));
+    }
+
+    #[test]
+    fn usage_scopes_outrank_a_newer_inference_only_token() {
+        let token = select_token(r#"{
+            "install:user:https://api.anthropic.com:user:inference": {"token":"inference-only","expiresAt":9000000000000},
+            "install:user:https://api.anthropic.com:user:profile user:inference": {"token":"usage","expiresAt":8000000000000},
+            "install:user:https://api.anthropic.com:user:inference user:profile": {"token":"older-usage","expiresAt":7000000000000}
+        }"#).unwrap();
+        assert_eq!(token.access_token, "usage");
+    }
+
+    #[test]
+    fn scope_matching_uses_whole_scopes_and_keeps_unknown_layout_fallback() {
+        let token = select_token(r#"{
+            "install:user:inference:https://api.anthropic.com:user:profile": {"token":"misleading-id","expiresAt":9000000000000},
+            "install:user:https://api.anthropic.com:user:inference_extra user:profile": {"token":"scope-prefix","expiresAt":9000000000000},
+            "install:user:https://api.anthropic.com:user:inference": {"token":"inference","expiresAt":8000000000000}
+        }"#).unwrap();
+        assert_eq!(token.access_token, "inference");
+        assert_eq!(
+            select_token(r#"{"future-layout":{"token":"fallback"}}"#)
+                .unwrap()
+                .access_token,
+            "fallback"
+        );
+    }
+
+    #[test]
     fn selects_the_freshest_inference_scoped_token() {
         let plaintext = r#"{
             "install:user:https://api.anthropic.com:user:profile": {
@@ -475,8 +678,35 @@ mod tests {
     #[test]
     fn reads_the_token_cache_out_of_a_desktop_config() {
         let config = r#"{"locale": "en-US", "oauth:tokenCache": "djEwYWJj"}"#;
-        assert_eq!(token_cache_value(config).as_deref(), Some("djEwYWJj"));
-        assert!(token_cache_value(r#"{"locale": "en-US"}"#).is_none());
+        assert_eq!(
+            token_cache_values(config),
+            vec![("oauth:tokenCache", "djEwYWJj".to_string())]
+        );
+        assert!(token_cache_values(r#"{"locale": "en-US"}"#).is_empty());
+        assert!(token_cache_values("not json").is_empty());
+    }
+
+    #[test]
+    fn prefers_the_v2_cache_but_keeps_the_legacy_one_as_a_fallback() {
+        let config = r#"{"oauth:tokenCache": "djEwb2xk", "oauth:tokenCacheV2": "djEwbmV3"}"#;
+        assert_eq!(
+            token_cache_values(config),
+            vec![
+                ("oauth:tokenCacheV2", "djEwbmV3".to_string()),
+                ("oauth:tokenCache", "djEwb2xk".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn ignores_emptied_token_caches() {
+        // The desktop app leaves the key in place with an empty value after a
+        // migration; that must not mask a populated cache under the other key.
+        let config = r#"{"oauth:tokenCacheV2": "", "oauth:tokenCache": "djEwb2xk"}"#;
+        assert_eq!(
+            token_cache_values(config),
+            vec![("oauth:tokenCache", "djEwb2xk".to_string())]
+        );
     }
 
     #[test]
@@ -502,8 +732,10 @@ mod tests {
     #[test]
     #[ignore = "requires a signed-in Claude desktop app on this machine"]
     fn reads_a_token_from_the_installed_desktop_app() {
-        let path = config_path().expect("a roaming config directory");
-        let token = read_token(&path).expect("the desktop app should expose a token");
+        let token = config_paths()
+            .iter()
+            .find_map(|path| read_token(path))
+            .expect("the desktop app should expose a token");
         assert!(token.access_token.starts_with("sk-ant-"));
         assert!(token.expires_at.unwrap_or_default() > 0);
     }

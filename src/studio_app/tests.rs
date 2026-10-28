@@ -1,4 +1,90 @@
 use super::*;
+use crate::ui::components::helper::{
+    show_helper, Caret, HelperInsertion, HelperState, HelperStatus, HelperView, InsertMode,
+};
+
+#[test]
+fn dashboard_does_not_retry_after_successful_opengl_run() {
+    let mut attempts = Vec::new();
+    run_dashboard_with_fallback(|renderer, _gl_error| {
+        attempts.push(renderer);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(attempts, [DashboardRenderer::OpenGl]);
+}
+
+#[test]
+fn dashboard_retries_opengl_painter_and_configuration_failures() {
+    for error in [
+        eframe::Error::OpenGL("OpenGL 2.0 unavailable".to_owned().into()),
+        eframe::Error::NoGlutinConfigs(Default::default(), "No GL configuration".into()),
+    ] {
+        let mut error = Some(error);
+        let mut attempts = Vec::new();
+        run_dashboard_with_fallback(|renderer, _gl_error| {
+            attempts.push(renderer);
+            error.take().map_or(Ok(()), Err)
+        })
+        .unwrap();
+        assert_eq!(
+            attempts,
+            [DashboardRenderer::OpenGl, DashboardRenderer::Warp]
+        );
+    }
+}
+
+#[test]
+fn dashboard_does_not_retry_application_errors() {
+    let mut attempts = Vec::new();
+    let error = run_dashboard_with_fallback(|renderer, _gl_error| {
+        attempts.push(renderer);
+        Err(eframe::Error::AppCreation("Application failed".into()))
+    })
+    .unwrap_err();
+    assert_eq!(attempts, [DashboardRenderer::OpenGl]);
+    assert!(error.contains("Application failed"));
+}
+
+#[test]
+fn dashboard_reports_both_failures_without_retrying_again() {
+    let mut attempts = Vec::new();
+    let error = run_dashboard_with_fallback(|renderer, _gl_error| {
+        attempts.push(renderer);
+        match renderer {
+            DashboardRenderer::OpenGl => Err(eframe::Error::OpenGL(
+                "OpenGL unavailable".to_owned().into(),
+            )),
+            DashboardRenderer::Warp => Err(eframe::Error::AppCreation("Fallback failed".into())),
+        }
+    })
+    .unwrap_err();
+    assert_eq!(
+        attempts,
+        [DashboardRenderer::OpenGl, DashboardRenderer::Warp]
+    );
+    assert!(error.contains("OpenGL:"));
+    assert!(error.contains("OpenGL unavailable"));
+    assert!(error.contains("WARP:"));
+    assert!(error.contains("Fallback failed"));
+}
+
+#[test]
+fn warp_launch_receives_the_original_opengl_error() {
+    run_dashboard_with_fallback(|renderer, original_error| match renderer {
+        DashboardRenderer::OpenGl => {
+            assert!(original_error.is_none());
+            Err(eframe::Error::OpenGL(
+                "missing OpenGL driver".to_owned().into(),
+            ))
+        }
+        DashboardRenderer::Warp => {
+            assert!(original_error.unwrap().contains("missing OpenGL driver"));
+            Ok(())
+        }
+    })
+    .unwrap();
+}
 
 fn run_test_ui(context: &egui::Context, input: egui::RawInput, run_ui: impl FnMut(&mut egui::Ui)) {
     let mut output = context.run_ui(input, run_ui);
@@ -302,7 +388,9 @@ fn studio_preview_uses_cached_poll_failure_state_instead_of_stale_values() {
     app.usage = Some(AppUsageData::from_iter([(
         crate::providers::ProviderId::Codex,
         crate::models::UsageData {
+            limits: Vec::new(),
             session: crate::models::UsageSection {
+                available: true,
                 percentage: 7.0,
                 resets_at: None,
             },
@@ -311,6 +399,7 @@ fn studio_preview_uses_cached_poll_failure_state_instead_of_stale_values() {
             monthly: None,
             credits: None,
             stale: false,
+            ..Default::default()
         },
     )]));
     app.usage_poll_ok = false;
@@ -344,11 +433,22 @@ fn app_with_surfaces(surfaces: Vec<SceneObject>) -> StudioApp {
     let history_snapshot = theme.clone();
     StudioApp {
         owner: 0,
+        update_status: crate::dashboard::UpdateStatus::Idle,
+        diagnostics: studio_diagnostics::DiagnosticsView::new(),
         page: Page::Studio,
-        settings: SettingsFile::default(),
+        // Pin English so UI text assertions do not follow the system language.
+        settings: {
+            let mut settings = SettingsFile::default();
+            settings.language = Some("en-US".into());
+            settings
+        },
+        synced_poll_interval_ms: SettingsFile::default().poll_interval_ms,
+        synced_taskbar_lock: false,
+        poll_interval_editor_generation: 0,
         startup_enabled: false,
         theme,
         theme_path: None,
+        available_themes: AvailableThemesCache::new(theme_engine::themes_directory()),
         selection: Selection::Surface(0),
         preview: None,
         preview_dirty: true,
@@ -371,9 +471,7 @@ fn app_with_surfaces(surfaces: Vec<SceneObject>) -> StudioApp {
         scene_width: DEFAULT_SCENE_WIDTH,
         inspector_width: DEFAULT_INSPECTOR_WIDTH,
         hovered_scene_item: None,
-        expression_helper: None,
-        action_helper: None,
-        text_template_helper: None,
+        helper: None,
         preview_mouse_overrides: HashMap::new(),
         preview_hover_target: None,
         preview_pending_click: None,
@@ -393,8 +491,366 @@ fn app_with_surfaces(surfaces: Vec<SceneObject>) -> StudioApp {
         context_menu_path: None,
         context_menu_dirty: false,
         context_menu_selection: None,
-        context_menu_action_helper: None,
         delete_context_menu_confirmation: None,
+    }
+}
+
+mod monitor_reconnection {
+    use super::*;
+    use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::WindowsAndMessaging::*;
+
+    struct MonitorWindow(HWND);
+
+    impl MonitorWindow {
+        fn new() -> Self {
+            static REGISTERED: std::sync::Once = std::sync::Once::new();
+            unsafe extern "system" fn procedure(
+                hwnd: HWND,
+                message: u32,
+                wparam: WPARAM,
+                lparam: LPARAM,
+            ) -> LRESULT {
+                unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+            }
+            let class = native_interop::wide_str("ClaudeCodeUsageMonitor");
+            unsafe {
+                let module = GetModuleHandleW(PCWSTR::null()).unwrap();
+                REGISTERED.call_once(|| {
+                    let window_class = WNDCLASSW {
+                        lpfnWndProc: Some(procedure),
+                        hInstance: module.into(),
+                        lpszClassName: PCWSTR::from_raw(class.as_ptr()),
+                        ..Default::default()
+                    };
+                    assert_ne!(RegisterClassW(&window_class), 0);
+                });
+                Self(
+                    CreateWindowExW(
+                        WINDOW_EX_STYLE::default(),
+                        PCWSTR::from_raw(class.as_ptr()),
+                        PCWSTR::null(),
+                        WINDOW_STYLE::default(),
+                        0,
+                        0,
+                        0,
+                        0,
+                        Some(HWND_MESSAGE),
+                        None,
+                        Some(module.into()),
+                        None,
+                    )
+                    .unwrap(),
+                )
+            }
+        }
+
+        fn owner(&self) -> isize {
+            self.0 .0 as isize
+        }
+
+        fn assert_message(&self, message: u32) {
+            let mut received = MSG::default();
+            assert!(unsafe {
+                PeekMessageW(&mut received, Some(self.0), message, message, PM_REMOVE).as_bool()
+            });
+            assert_eq!(received.hwnd, self.0);
+            assert_eq!(received.message, message);
+        }
+    }
+
+    impl Drop for MonitorWindow {
+        fn drop(&mut self) {
+            unsafe { DestroyWindow(self.0).unwrap() };
+        }
+    }
+
+    #[test]
+    fn dashboard_reconnects_after_monitor_replacement_and_preserves_edits() {
+        let original = MonitorWindow::new();
+        let mut app = app_with_surfaces(vec![root("root")]);
+        app.owner = original.owner();
+        app.dirty = true;
+        app.theme.name = "Unsaved theme".into();
+        app.undo_stack.push(app.theme.clone());
+        app.context_menu_dirty = true;
+        app.settings.poll_interval_ms = POLL_5_MIN;
+        drop(original);
+
+        let replacement = MonitorWindow::new();
+        crate::dashboard::publish_update_status(
+            replacement.0,
+            crate::dashboard::UpdateStatus::Available("3.0.0".into()),
+        );
+        app.last_cache_read = Instant::now() - Duration::from_secs(2);
+        app.refresh_usage_cache();
+
+        assert_eq!(app.owner, replacement.owner());
+        assert_eq!(
+            app.update_status,
+            crate::dashboard::UpdateStatus::Available("3.0.0".into())
+        );
+        assert!(app.dirty);
+        assert_eq!(app.theme.name, "Unsaved theme");
+        assert_eq!(app.undo_stack.len(), 1);
+        assert!(app.context_menu_dirty);
+        assert_eq!(app.settings.poll_interval_ms, POLL_5_MIN);
+        app.request_refresh();
+        assert!(app.settings_error.is_none());
+        replacement.assert_message(WM_APP_REFRESH_NOW);
+    }
+
+    #[test]
+    fn dashboard_commands_reconnect_before_periodic_refresh() {
+        let original = MonitorWindow::new();
+        let mut app = app_with_surfaces(vec![root("root")]);
+        app.owner = original.owner();
+        drop(original);
+        let replacement = MonitorWindow::new();
+        crate::dashboard::publish_update_status(
+            replacement.0,
+            crate::dashboard::UpdateStatus::Idle,
+        );
+
+        app.request_refresh();
+        assert!(app.settings_error.is_none());
+        replacement.assert_message(WM_APP_REFRESH_NOW);
+        app.save_settings();
+        assert!(app.settings_error.is_none());
+        replacement.assert_message(WM_APP_SETTINGS_UPDATED);
+        for message in [
+            native_interop::WM_APP_ENABLE_DIAGNOSTICS,
+            native_interop::WM_APP_DISABLE_DIAGNOSTICS,
+        ] {
+            studio_diagnostics::send_owner_message(app.owner, message).unwrap();
+            replacement.assert_message(message);
+        }
+        app.request_update_action();
+        assert!(app.theme_error.is_none());
+        assert_eq!(app.update_status, crate::dashboard::UpdateStatus::Checking);
+        replacement.assert_message(native_interop::WM_APP_CHECK_FOR_UPDATES);
+    }
+
+    #[test]
+    fn dashboard_rejects_stale_or_unrelated_monitor_snapshots() {
+        let original = MonitorWindow::new();
+        let dead_owner = original.owner();
+        drop(original);
+        let replacement = MonitorWindow::new();
+        let snapshot_path = app_settings::app_data_directory().join("update-status.json");
+        app_settings::write_json_atomic(
+            &snapshot_path,
+            &serde_json::json!({
+                "owner": replacement.owner(),
+                "process_id": 0,
+                "status": {"Available": "3.0.0"}
+            }),
+        )
+        .unwrap();
+        assert_eq!(crate::dashboard::resolve_monitor_owner(dead_owner), None);
+        assert_eq!(
+            crate::dashboard::read_update_status(replacement.owner()),
+            crate::dashboard::UpdateStatus::Idle
+        );
+
+        let unrelated_class = native_interop::wide_str("STATIC");
+        let unrelated = MonitorWindow(unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                PCWSTR::from_raw(unrelated_class.as_ptr()),
+                PCWSTR::null(),
+                WINDOW_STYLE::default(),
+                0,
+                0,
+                0,
+                0,
+                Some(HWND_MESSAGE),
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+        });
+        crate::dashboard::publish_update_status(
+            unrelated.0,
+            crate::dashboard::UpdateStatus::Available("3.0.0".into()),
+        );
+        assert_eq!(crate::dashboard::resolve_monitor_owner(dead_owner), None);
+        assert_eq!(
+            crate::dashboard::read_update_status(unrelated.owner()),
+            crate::dashboard::UpdateStatus::Idle
+        );
+
+        crate::dashboard::publish_update_status(
+            replacement.0,
+            crate::dashboard::UpdateStatus::Idle,
+        );
+        drop(replacement);
+        assert_eq!(crate::dashboard::resolve_monitor_owner(dead_owner), None);
+        std::fs::write(snapshot_path, b"incomplete JSON").unwrap();
+        assert_eq!(crate::dashboard::resolve_monitor_owner(dead_owner), None);
+    }
+
+    #[test]
+    fn dashboard_keeps_live_owner_and_standalone_editor_disconnected() {
+        let original = MonitorWindow::new();
+        let other = MonitorWindow::new();
+        crate::dashboard::publish_update_status(other.0, crate::dashboard::UpdateStatus::Idle);
+        assert_eq!(
+            crate::dashboard::resolve_monitor_owner(original.owner()),
+            Some(original.owner())
+        );
+        assert_eq!(crate::dashboard::resolve_monitor_owner(0), None);
+    }
+}
+
+#[test]
+fn available_themes_keeps_current_external_theme_fresh_without_stale_fallbacks() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut app = app_with_surfaces(vec![root("root")]);
+    app.available_themes = AvailableThemesCache::new(directory.path().join("library"));
+    let first_path = directory.path().join("first.json");
+    app.theme_path = Some(first_path.clone());
+    app.theme.name = "First".into();
+    let themes = app.available_themes();
+    assert_eq!(themes.len(), 1);
+    assert_eq!(themes[0].path, first_path);
+    app.theme.name = "Renamed".into();
+    assert_eq!(app.available_themes()[0].name, "Renamed");
+    let second_path = directory.path().join("second.json");
+    app.theme_path = Some(second_path.clone());
+    let themes = app.available_themes();
+    assert_eq!(themes.len(), 1);
+    assert_eq!(themes[0].path, second_path);
+    app.theme_path = None;
+    assert!(app.available_themes().is_empty());
+}
+
+#[test]
+fn diagnostics_page_has_logging_controls_and_menu_version() {
+    let context = egui::Context::default();
+    configure_style(&context, LanguageId::English);
+    let mut app = app_with_surfaces(vec![root("main")]);
+    app.page = Page::Diagnostics;
+    let mut output = context.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1100.0, 850.0),
+            )),
+            ..Default::default()
+        },
+        |ui| app.shell(ui),
+    );
+    fn collect_text(shape: &egui::epaint::Shape, text: &mut String) {
+        match shape {
+            egui::epaint::Shape::Text(shape) => {
+                text.push_str(&shape.galley.job.text);
+                text.push('\n');
+            }
+            egui::epaint::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect_text(shape, text);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut text = String::new();
+    for shape in &output.shapes {
+        collect_text(&shape.shape, &mut text);
+    }
+    output.textures_delta.clear();
+    assert!(text.find("Assets").unwrap() < text.find("Diagnostics").unwrap());
+    assert!(text.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))));
+    assert!(text.contains("Logging"));
+    assert!(text.contains("Write diagnostic events to"));
+    assert!(text.contains("Disabled"));
+    assert!(text.contains("Refresh usage"));
+    assert!(text.contains("Follow latest event"));
+    assert!(text.contains("Copy log"));
+    assert!(!text.contains("Monitor disconnected"));
+    assert!(!text.contains("Dashboard process"));
+    assert!(!text.contains("Record diagnostics"));
+    assert!(!text.contains("Pause output"));
+    assert!(
+        !crate::diagnose::is_enabled(),
+        "visiting the page must not start recording"
+    );
+}
+
+#[test]
+fn context_menu_frequency_replaces_custom_dashboard_value_and_edit_buffer() {
+    let mut app = app_with_surfaces(vec![root("main")]);
+    app.settings.poll_interval_ms = 2 * POLL_1_MIN;
+    app.synced_poll_interval_ms = app.settings.poll_interval_ms;
+    app.dirty = true;
+
+    app.sync_poll_interval(POLL_5_MIN);
+    assert_eq!(app.settings.poll_interval_ms, POLL_5_MIN);
+    assert_eq!(app.poll_interval_editor_generation, 1);
+    assert!(app.dirty);
+
+    // An unrelated settings edit must not restore the previous two minutes.
+    app.settings.usage_countdown = true;
+    app.sync_poll_interval(POLL_5_MIN);
+    assert_eq!(app.settings.poll_interval_ms, POLL_5_MIN);
+    assert_eq!(app.poll_interval_editor_generation, 1);
+    assert!(app.settings.usage_countdown);
+}
+
+#[test]
+fn local_frequency_edits_survive_sync_before_save() {
+    let mut app = app_with_surfaces(vec![root("main")]);
+    app.sync_poll_interval(POLL_5_MIN);
+    let generation = app.poll_interval_editor_generation;
+    app.settings.poll_interval_ms = 2 * POLL_1_MIN;
+
+    // The on-disk preset is still five until the local edit has been saved.
+    app.sync_poll_interval(POLL_5_MIN);
+    assert_eq!(app.settings.poll_interval_ms, 2 * POLL_1_MIN);
+    assert_eq!(app.poll_interval_editor_generation, generation);
+
+    // After saving, a later context-menu selection becomes authoritative again.
+    app.synced_poll_interval_ms = app.settings.poll_interval_ms;
+    app.sync_poll_interval(POLL_15_MIN);
+    assert_eq!(app.settings.poll_interval_ms, POLL_15_MIN);
+    assert_eq!(app.poll_interval_editor_generation, generation + 1);
+}
+
+#[test]
+fn menu_taskbar_lock_survives_unrelated_dashboard_edits() {
+    let mut app = app_with_surfaces(vec![root("main")]);
+    let mut persisted = SettingsFile::default();
+    persisted.lock_taskbar = true;
+    app_settings::save_settings(&persisted).unwrap();
+    // Simulate a menu toggle while the dashboard still holds its startup snapshot.
+    assert!(!app.settings.lock_taskbar);
+    app.settings.usage_countdown = true;
+    app.save_settings();
+    assert!(app.settings.lock_taskbar);
+    let saved = app_settings::load_settings();
+    assert!(saved.lock_taskbar && saved.usage_countdown);
+    persisted.lock_taskbar = false;
+    app_settings::save_settings(&persisted).unwrap();
+    app.sync_taskbar_lock(false);
+    assert!(!app.settings.lock_taskbar);
+}
+
+#[test]
+fn local_taskbar_lock_edits_survive_sync_before_save() {
+    let mut app = app_with_surfaces(vec![root("main")]);
+    for saved in [false, true] {
+        app.settings.lock_taskbar = saved;
+        app.synced_taskbar_lock = saved;
+        app.settings.lock_taskbar = !saved;
+        app.sync_taskbar_lock(saved);
+        assert_eq!(app.settings.lock_taskbar, !saved);
+        // A subsequent menu toggle becomes authoritative after saving.
+        app.synced_taskbar_lock = app.settings.lock_taskbar;
+        app.sync_taskbar_lock(saved);
+        assert_eq!(app.settings.lock_taskbar, saved);
     }
 }
 
@@ -551,6 +1007,7 @@ fn context_menu_action_scripts_round_trip_every_action_kind() {
             provider: ContextMenuProvider::Codex,
         },
         ContextMenuAction::ToggleStartup,
+        ContextMenuAction::ToggleTaskbarLock,
         ContextMenuAction::ToggleWidget,
         ContextMenuAction::SetLanguage {
             language: "en-US".into(),
@@ -602,6 +1059,13 @@ fn text_helper_catalog_only_builds_valid_template_tokens() {
         text_template_token("claude.session.percentage", TextTemplateFormat::Percentage),
         "{claude.session.percentage:percent}"
     );
+    let display = text_template_value("claude.session.display").unwrap();
+    for format in [
+        TextTemplateFormat::UsageLine,
+        TextTemplateFormat::UsageBadge,
+    ] {
+        assert!(text_template_formats(display.kind).contains(&format));
+    }
 }
 
 #[test]
@@ -612,6 +1076,301 @@ fn text_helper_only_marks_real_template_tokens_as_expressions() {
     assert!(template_has_expression(
         "Used {claude.session.percentage:percent}"
     ));
+}
+
+#[test]
+fn reported_limits_are_grouped_with_claude_in_both_editors() {
+    use crate::models::{UsageData, UsageLimit, UsageSection};
+    use crate::providers::ProviderId;
+    let usage = UsageData {
+        limits: vec![UsageLimit {
+            key: "nimbus_quill".into(),
+            kind: "nimbus_quill".into(),
+            label: "nimbus quill".into(),
+            usage: UsageSection {
+                available: true,
+                percentage: 37.0,
+                resets_at: None,
+            },
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let data = AppUsageData::from_iter([(ProviderId::Claude, usage)]);
+    let context = DataContext::from_usage(Some(&data), &Canvas::default());
+    let language = LanguageId::English;
+    let choices = text_template_choices(&context, language);
+    let mut seen_claude = false;
+    let mut left_claude = false;
+    for value in &choices {
+        if value.group == "Claude Code" {
+            assert!(!left_claude, "Claude values must be in one group");
+            seen_claude = true;
+        } else if seen_claude {
+            left_claude = true;
+        }
+    }
+    let shown = choices
+        .iter()
+        .find(|value| value.expression == "claude.limits.nimbus_quill.display")
+        .unwrap();
+    assert_eq!(shown.group, "Claude Code");
+    assert_eq!(shown.label, "Nimbus quill — Shown");
+    let token = text_template_token(&shown.expression, TextTemplateFormat::Percentage);
+    assert_eq!(token, "{claude.limits.nimbus_quill.display:percent}");
+    assert_eq!(theme_engine::format_template(&token, &context), "37%");
+    for choice in choices
+        .iter()
+        .filter(|value| value.expression.starts_with("claude.limits."))
+    {
+        for format in text_template_formats(choice.kind) {
+            assert!(theme_engine::validate_template(
+                &text_template_token(&choice.expression, *format),
+                &context
+            )
+            .is_empty());
+        }
+    }
+
+    // A refresh can remove a quota while its format picker remains open.
+    let empty = DataContext::from_usage(None, &Canvas::default());
+    let missing = text_template_choice(&shown.expression, &empty, language).unwrap();
+    assert_eq!(missing.expression, shown.expression);
+    assert!(matches!(
+        missing.kind,
+        TextTemplateValueKind::DisplayPercentage
+    ));
+}
+
+#[test]
+fn text_helper_lists_reported_quotas_with_provider_filters() {
+    let language = LanguageId::English;
+    let mut data = DataContext::from_usage(None, &Canvas::default());
+    data.insert("claude.limits.nimbus_quill.available", 1.0);
+    data.insert("claude.limits.nimbus_quill.percentage", 37.0);
+    data.insert_string("claude.limits.nimbus_quill.label", "nimbus quill");
+    let entries = value_entries(&data, language, ValueSyntax::Template);
+    let used = entries
+        .iter()
+        .find(|entry| entry.id == "claude.limits.nimbus_quill.percentage")
+        .expect("reported quota is listed");
+    assert_eq!(used.group, "Claude Code · Nimbus quill");
+    assert_eq!(used.label, "Used");
+    assert_eq!(used.value.as_deref(), Some("37%"));
+    assert_eq!(used.scope, Some("claude"));
+    assert_eq!(used.category, "Usage");
+    assert!(entries
+        .iter()
+        .filter(|entry| entry.id.contains(".reset."))
+        .all(|entry| entry.category == "Resets"));
+
+    let context = egui::Context::default();
+    configure_style(&context, language);
+    let mut state = HelperState::new(String::new());
+    state.search = "nimbus".into();
+    let scopes = helper_scopes(language);
+    let mut output = context.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1200.0, 900.0),
+            )),
+            ..Default::default()
+        },
+        |ui| {
+            show_helper(
+                ui,
+                &mut state,
+                HelperView {
+                    kind_icon: LucideIcon::Type,
+                    kind: "Text",
+                    description: "",
+                    hint: "",
+                    code_editor: false,
+                    editor_height: 64.0,
+                    categories: &[],
+                    scopes: &scopes,
+                    entries: &entries,
+                },
+                language,
+                |_| HelperStatus::Valid {
+                    message: "Template is valid".into(),
+                    result: None,
+                },
+                None,
+                |_, entry, _| {
+                    Ok(HelperInsertion::new(
+                        text_template_token(&entry.id, TextTemplateFormat::Percentage),
+                        InsertMode::Inline,
+                    ))
+                },
+            );
+        },
+    );
+    fn collect(shape: &egui::epaint::Shape, text: &mut String) {
+        match shape {
+            egui::epaint::Shape::Text(shape) => {
+                text.push_str(&shape.galley.job.text);
+                text.push('\n');
+            }
+            egui::epaint::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect(shape, text);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut text = String::new();
+    for shape in &output.shapes {
+        collect(&shape.shape, &mut text);
+    }
+    output.textures_delta.clear();
+    assert!(text.contains("Claude Code"));
+    assert!(text.contains("Claude Code · Nimbus quill"));
+    assert!(text.contains("Used"));
+    assert!(text.contains("37%"));
+    assert!(text.contains("Insert"));
+    assert!(!text.contains("Codex"));
+    assert!(state
+        .selected
+        .as_deref()
+        .is_some_and(|id| id.contains("nimbus_quill")));
+}
+
+#[test]
+fn expression_and_text_helpers_offer_the_same_values() {
+    let mut data = DataContext::from_usage(None, &Canvas::default());
+    data.insert("claude.limits.nimbus_quill.available", 1.0);
+    data.insert("claude.limits.nimbus_quill.percentage", 37.0);
+    let expression = value_entries(&data, LanguageId::English, ValueSyntax::Expression);
+    let template = value_entries(&data, LanguageId::English, ValueSyntax::Template);
+    for name in [
+        "active.five_hour.percentage",
+        "codex.five_hour.reset.minutes",
+        "claude.weekly.remaining",
+        "claude.weekly.label",
+        "claude.headline.percentage",
+        "opencode.credits.balance",
+        "claude.limits.nimbus_quill.percentage",
+        "claude.limits.nimbus_quill.reset.unix",
+        "time.local.hour",
+        "time.now.unix",
+        "canvas.width",
+        "providers.count",
+        "app.version",
+        "i18n.now",
+        "fn:round",
+        "op:>",
+    ] {
+        for entries in [&expression, &template] {
+            assert!(
+                entries.iter().any(|entry| entry.id == name),
+                "{name} is missing"
+            );
+        }
+    }
+    // Only a text template can show a whole window as a usage summary.
+    assert!(template.iter().any(|entry| entry.id == "claude.session"));
+    assert!(!expression.iter().any(|entry| entry.id == "claude.session"));
+    assert_eq!(
+        template.len(),
+        expression.len()
+            + template
+                .iter()
+                .filter(|entry| !expression.iter().any(|other| other.id == entry.id))
+                .count()
+    );
+    assert!(!expression
+        .iter()
+        .any(|entry| entry.token == "claude.five_hour.percentage"));
+    for entries in [&expression, &template] {
+        let mut ids = entries.iter().map(|entry| &entry.id).collect::<Vec<_>>();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), entries.len(), "entry ids are unique");
+    }
+}
+
+#[test]
+fn values_insert_to_suit_the_field_and_the_caret() {
+    let language = LanguageId::English;
+    let data = DataContext::from_usage(None, &Canvas::default());
+    let entries = value_entries(&data, language, ValueSyntax::Template);
+    let entry = |id: &str| entries.iter().find(|entry| entry.id == id).unwrap();
+    let context = egui::Context::default();
+    // `draft` marks the caret with `|`.
+    let insert = |id: &str, syntax: ValueSyntax, draft: &str| {
+        let index = draft.chars().position(|c| c == '|').unwrap();
+        let draft = draft.replace('|', "");
+        let mut forms = HelperForms::default();
+        let mut result = None;
+        run_test_ui(&context, egui::RawInput::default(), |ui| {
+            result = Some(value_details(
+                ui,
+                entry(id),
+                syntax,
+                Caret::new(&draft, index),
+                &mut forms,
+                &data,
+                language,
+            ));
+        });
+        result
+            .unwrap()
+            .map(|insertion| (insertion.text, insertion.mode))
+    };
+    let template = ValueSyntax::Template;
+    assert_eq!(
+        insert("claude.session.reset.unix", template, "Resets |"),
+        Ok((
+            "{claude.session.reset.unix:datetime_short}".into(),
+            InsertMode::Inline
+        ))
+    );
+    assert_eq!(
+        insert("fn:round", template, "Used |"),
+        Ok(("{round(0):0.##}".into(), InsertMode::Inline))
+    );
+    assert_eq!(
+        insert("fn:round", template, "Used {|a:percent}"),
+        Ok(("round(0)".into(), InsertMode::Spaced))
+    );
+    assert!(insert("op:>", template, "Used |").is_err());
+    assert_eq!(
+        insert("op:>", template, "Used {a |:percent}"),
+        Ok((">".into(), InsertMode::Spaced))
+    );
+    assert_eq!(
+        insert("claude.session.reset.unix", ValueSyntax::Expression, "|"),
+        Ok(("claude.session.reset.unix".into(), InsertMode::Spaced))
+    );
+
+    // Actions take values only where an expression is accepted.
+    let action = ValueSyntax::Action;
+    assert_eq!(
+        insert("canvas.width", action, "set(self, width, |)"),
+        Ok(("canvas.width".into(), InsertMode::Spaced))
+    );
+    assert_eq!(
+        insert(
+            "fn:round",
+            action,
+            "show_dashboard()\nincrease(\"bar\", x, 10 * |)"
+        ),
+        Ok(("round(0)".into(), InsertMode::Spaced))
+    );
+    assert_eq!(
+        insert(
+            "op:*",
+            action,
+            r#"layer_actions("set(\"bar\", width, 10 |)")"#
+        ),
+        Ok(("*".into(), InsertMode::Spaced))
+    );
+    assert!(insert("canvas.width", action, "set(self, |width, 1)").is_err());
+    assert!(insert("canvas.width", action, "show_dashboard()|").is_err());
+    assert!(insert("op:*", action, "|").is_err());
 }
 
 #[test]
@@ -681,6 +1440,166 @@ fn dirty_theme_defers_new_theme_until_the_user_decides() {
         Some(PendingUnsavedAction::NewTheme)
     );
     assert!(app.new_theme_name.is_none());
+}
+
+#[test]
+fn version_text_and_trailing_icon_share_one_update_button() {
+    fn footer_button(app: &mut StudioApp, ui: &mut egui::Ui) -> egui::Response {
+        ui.allocate_ui_with_layout(
+            egui::vec2(94.0, CONTROL_HEIGHT),
+            egui::Layout::right_to_left(egui::Align::Max),
+            |ui| app.version_button(ui),
+        )
+        .inner
+    }
+    for status in [
+        crate::dashboard::UpdateStatus::Idle,
+        crate::dashboard::UpdateStatus::Available("9.8.7".into()),
+    ] {
+        for click_icon in [false, true] {
+            let context = egui::Context::default();
+            configure_style(&context, LanguageId::English);
+            let mut app = app_with_surfaces(vec![root("alpha")]);
+            app.update_status = status.clone();
+            app.dirty = true;
+            let mut rect = egui::Rect::NOTHING;
+            run_test_ui(&context, egui::RawInput::default(), |ui| {
+                rect = footer_button(&mut app, ui).rect;
+            });
+            let footer_space = DEFAULT_MENU_WIDTH - 16.0 - 36.0 * 98.0 / 96.0 - 4.0;
+            assert!(
+                rect.width() <= footer_space,
+                "version button overflows footer: {rect:?}"
+            );
+            let position = egui::pos2(
+                if click_icon {
+                    rect.right() - 8.0
+                } else {
+                    rect.left() + 12.0
+                },
+                rect.center().y,
+            );
+            // Settle pointer movement, then allow the tooltip to appear.
+            run_test_ui(
+                &context,
+                egui::RawInput {
+                    time: Some(1.0),
+                    events: vec![egui::Event::PointerMoved(position)],
+                    ..Default::default()
+                },
+                |ui| {
+                    footer_button(&mut app, ui);
+                },
+            );
+            run_test_ui(
+                &context,
+                egui::RawInput {
+                    time: Some(2.0),
+                    ..Default::default()
+                },
+                |ui| {
+                    footer_button(&mut app, ui);
+                },
+            );
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    time: Some(3.0),
+                    ..Default::default()
+                },
+                |ui| {
+                    rect = footer_button(&mut app, ui).rect;
+                },
+            );
+            let mut text = String::new();
+            let mut outlined = false;
+            let mut menu_hover_fill = false;
+            for shape in &output.shapes {
+                match &shape.shape {
+                    egui::epaint::Shape::Text(shape) => {
+                        text.push_str(&shape.galley.job.text);
+                        if shape.galley.job.text == format!("v{}", env!("CARGO_PKG_VERSION")) {
+                            let ink_center = shape.pos.y + shape.galley.mesh_bounds.center().y;
+                            assert!((ink_center - rect.center().y).abs() <= 1.0,
+                                "version text is not visually centred: ink={ink_center}, button={rect:?}");
+                        }
+                    }
+                    egui::epaint::Shape::Rect(shape) if shape.rect.contains_rect(rect) => {
+                        outlined |= shape.stroke.width > 0.0;
+                        menu_hover_fill |= shape.fill == crate::ui::theme::menu_hover();
+                    }
+                    _ => {}
+                }
+            }
+            output.textures_delta.clear();
+            let (icon, tooltip) = if matches!(status, crate::dashboard::UpdateStatus::Available(_))
+            {
+                (LucideIcon::Download, "Click to update to v9.8.7")
+            } else {
+                (LucideIcon::RefreshCw, "Check for updates")
+            };
+            assert!(text.contains(icon.unicode()), "missing update icon: {text}");
+            assert!(text.contains(tooltip), "missing update tooltip: {text}");
+            assert!(!outlined, "version button hover should have no border");
+            assert!(
+                menu_hover_fill,
+                "version button should use the menu hover fill"
+            );
+            let input = egui::RawInput {
+                events: vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                ..Default::default()
+            };
+            run_test_ui(&context, input, |ui| {
+                footer_button(&mut app, ui);
+            });
+            assert_eq!(
+                app.pending_unsaved_action,
+                Some(PendingUnsavedAction::Update {
+                    install: matches!(status, crate::dashboard::UpdateStatus::Available(_)),
+                }),
+            );
+            assert!(app.theme_error.is_none());
+        }
+    }
+}
+
+#[test]
+fn update_button_ignores_repeated_clicks_while_busy() {
+    for status in [
+        crate::dashboard::UpdateStatus::Checking,
+        crate::dashboard::UpdateStatus::Applying,
+    ] {
+        let mut app = app_with_surfaces(vec![root("alpha")]);
+        app.update_status = status;
+        app.request_update_action();
+        assert!(app.theme_error.is_none());
+        assert!(app.pending_unsaved_action.is_none());
+    }
+}
+
+#[test]
+fn disconnected_update_button_reports_error_without_staying_busy() {
+    let mut app = app_with_surfaces(vec![root("alpha")]);
+    app.request_update_action();
+    assert!(app
+        .theme_error
+        .as_deref()
+        .unwrap()
+        .contains("not connected"));
+    assert!(!app.update_status.is_busy());
 }
 
 #[test]

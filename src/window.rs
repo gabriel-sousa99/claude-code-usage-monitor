@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -8,31 +8,36 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::System::Diagnostics::Debug::IsDebuggerPresent;
 use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
 use windows::Win32::System::Registry::*;
-use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
+use windows::Win32::System::Threading::{
+    CreateMutexW, GetCurrentProcess, TerminateProcess, WaitForSingleObject,
+};
 use windows::Win32::UI::Accessibility::HWINEVENTHOOK;
-use windows::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows::Win32::UI::Controls::{HOVER_DEFAULT, WM_MOUSEHOVER, WM_MOUSELEAVE};
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetDoubleClickTime, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    GetDoubleClickTime, ReleaseCapture, SetCapture, TrackMouseEvent, TME_HOVER, TME_LEAVE,
+    TRACKMOUSEEVENT,
 };
-use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::app_settings::{
-    self, load_settings, save_settings, LegacyPlacement, SettingsFile, POLL_15_MIN,
-    POLL_15_MIN_SECONDS, POLL_1_HOUR, POLL_1_HOUR_SECONDS, POLL_1_MIN, POLL_1_MIN_SECONDS,
-    POLL_5_MIN, POLL_5_MIN_SECONDS,
+    self, load_settings, save_settings, LegacyPlacement, PlacementOverride, SettingsFile,
+    POLL_15_MIN, POLL_15_MIN_SECONDS, POLL_1_HOUR, POLL_1_HOUR_SECONDS, POLL_1_MIN,
+    POLL_1_MIN_SECONDS, POLL_5_MIN, POLL_5_MIN_SECONDS,
 };
 use crate::context_menu::{self, ContextMenuAction, ContextMenuItem, ContextMenuItemKind};
 use crate::diagnose;
 use crate::localization::{self, LanguageId, Strings};
 use crate::models::AppUsageData;
 use crate::native_interop::{
-    self, TIMER_CLOCK, TIMER_COUNTDOWN, TIMER_MOUSE_CLICK, TIMER_POLL, TIMER_RESET_POLL,
-    TIMER_TRAY_HOVER, TIMER_UPDATE_CHECK, TIMER_WINDOW_STATE, WM_APP_OPEN_DASHBOARD, WM_APP_QUIT,
-    WM_APP_REFRESH_NOW, WM_APP_SETTINGS_UPDATED, WM_APP_TRAY, WM_APP_USAGE_UPDATED,
+    self, TIMER_CLOCK, TIMER_COUNTDOWN, TIMER_CROSSFADE_SCHEDULE, TIMER_MOUSE_CLICK, TIMER_POLL,
+    TIMER_RESET_POLL, TIMER_TRAY_HOVER, TIMER_TRAY_REPOSITION, TIMER_UPDATE_CHECK,
+    TIMER_WINDOW_STATE, WM_APP_DISABLE_DIAGNOSTICS, WM_APP_ENABLE_DIAGNOSTICS,
+    WM_APP_OPEN_DASHBOARD, WM_APP_QUIT, WM_APP_REFRESH_NOW, WM_APP_SETTINGS_UPDATED,
+    WM_APP_TASKBAR_COLLISION, WM_APP_TRAY, WM_APP_USAGE_UPDATED,
 };
 use crate::poller;
 use crate::providers::{ProviderId, ProviderSet};
@@ -42,7 +47,7 @@ use crate::theme_engine::{
     MouseEventKind, ReferenceRegion, SurfaceNest, ThemeDocument, ThemeRuntime, VerticalAnchor,
 };
 use crate::tray_icon;
-use crate::updater::{self, InstallChannel, ReleaseDescriptor, UpdateCheckResult};
+use crate::updater::{self, AvailableUpdate, InstallChannel, ReleaseDescriptor, UpdateCheckResult};
 
 /// Copyable HWND value used by the watchdog after the UI thread publishes it.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -93,6 +98,10 @@ struct AppState {
     install_channel: InstallChannel,
 
     providers: ProviderSet,
+    pub(super) show_antigravity_gemini: bool,
+    pub(super) show_antigravity_external: bool,
+    crossfade_opacity: f64,
+    accounts: crate::accounts::AccountSettings,
 
     data: Option<AppUsageData>,
 
@@ -103,21 +112,32 @@ struct AppState {
     auth_watch_mode: poller::CredentialWatchMode,
     auth_watch_snapshot: poller::CredentialWatchSnapshot,
     last_poll_ok: bool,
+    last_poll_failure: Option<poller::PollFailure>,
     update_status: UpdateStatus,
     last_update_check_unix: Option<u64>,
 
     taskbar_index: usize,
     tray_offset: i32,
     dragging: bool,
-    /// Botão esquerdo pressionado sobre o widget, ainda sem deslocamento
-    /// suficiente para virar arraste. Separar as duas coisas é o que mantém o
-    /// clique nos ícones funcionando: um clique sem movimento nunca arrasta.
-    left_press_pending: bool,
-    drag_start_mouse_x: i32,
+    pending_drag: bool,
+    drag_start_cursor: POINT,
+    drag_start_origin: POINT,
     drag_start_client_x: i32,
-    drag_start_offset: i32,
+    auto_ejected: bool,
+    auto_ejected_for_capacity: bool,
+    auto_ejected_origin: Option<POINT>,
+    auto_ejected_host: Option<app_settings::FloatingHost>,
+    /// When true, never auto-eject to floating on taskbar collisions.
+    /// The widget stays docked (but can still be dragged along the bar).
+    lock_taskbar: bool,
+    is_switching_window_style: bool,
+    is_snapped: bool,
+    placement_override: Option<PlacementOverride>,
+    floating_card_opacity: Option<u8>,
+    window_state_timer_active: bool,
 
     custom_theme_enabled: bool,
+    usage_countdown: bool,
     active_theme_path: Option<PathBuf>,
     active_theme: Option<ThemeDocument>,
     theme_clock_interval: Option<Duration>,
@@ -142,7 +162,41 @@ enum UpdateStatus {
     Checking,
     Applying,
     UpToDate,
-    Available(ReleaseDescriptor),
+    Available(AvailableUpdate),
+}
+
+fn publish_update_status(state: &AppState) {
+    use crate::dashboard::UpdateStatus as DashboardStatus;
+    let status = match &state.update_status {
+        UpdateStatus::Idle | UpdateStatus::UpToDate => DashboardStatus::Idle,
+        UpdateStatus::Checking => DashboardStatus::Checking,
+        UpdateStatus::Applying => DashboardStatus::Applying,
+        UpdateStatus::Available(update) => DashboardStatus::Available(update.version().to_owned()),
+    };
+    crate::dashboard::publish_update_status(controller_for(state.hwnd.to_hwnd()), status);
+}
+
+fn perform_update_action(hwnd: HWND) {
+    let update = {
+        let state = lock_state();
+        let Some(state) = state.as_ref() else {
+            return;
+        };
+        if matches!(
+            state.update_status,
+            UpdateStatus::Checking | UpdateStatus::Applying
+        ) {
+            return;
+        }
+        match &state.update_status {
+            UpdateStatus::Available(update) => Some(update.clone()),
+            _ => None,
+        }
+    };
+    match update {
+        Some(update) => begin_update_install(hwnd, update),
+        None => begin_update_check(hwnd, true),
+    }
 }
 
 const RETRY_BASE_MS: u32 = 30_000; // 30 seconds
@@ -153,18 +207,19 @@ const IDM_FREQ_5MIN: u16 = 11;
 const IDM_FREQ_15MIN: u16 = 12;
 const IDM_FREQ_1HOUR: u16 = 13;
 const IDM_START_WITH_WINDOWS: u16 = 20;
+const IDM_LOCK_TASKBAR: u16 = 21;
 const IDM_VERSION_ACTION: u16 = 31;
 const IDM_LANG_SYSTEM: u16 = 100;
 const IDM_LANG_FIRST: u16 = 101;
 const IDM_DASHBOARD: u16 = 71;
+// 62 stays the whole-provider Antigravity toggle used by saved custom menus.
+pub(super) const IDM_PROVIDER_ANTIGRAVITY_GEMINI: u16 = 68;
+pub(super) const IDM_PROVIDER_ANTIGRAVITY_EXTERNAL: u16 = 67;
 
 const WM_DPICHANGED_MSG: u32 = 0x02E0;
 const WM_APP_UPDATE_CHECK_COMPLETE: u32 = WM_APP + 2;
 const TRAY_ICON_UPDATE_REPOSITION_SUPPRESS_MS: u64 = 750;
 const WINDOW_STATE_INTERVAL_MS: u32 = 250;
-/// Deslocamento horizontal a partir do qual o botão pressionado vira arraste
-/// do widget, em vez de clique.
-const DRAG_THRESHOLD_PX: i32 = 4;
 
 fn language_menu_command_id(language: LanguageId) -> u16 {
     IDM_LANG_FIRST
@@ -179,29 +234,55 @@ fn language_from_menu_command_id(command: u16) -> Option<LanguageId> {
 }
 
 fn open_web_url(hwnd: HWND, url: &str, failure_message: &'static str) {
-    if !context_menu::supported_url(url) {
-        return;
-    }
-    unsafe {
-        let operation = native_interop::wide_str("open");
-        let url = native_interop::wide_str(url.trim());
-        let result = ShellExecuteW(
-            Some(hwnd),
-            PCWSTR::from_raw(operation.as_ptr()),
-            PCWSTR::from_raw(url.as_ptr()),
-            PCWSTR::null(),
-            PCWSTR::null(),
-            SW_SHOWNORMAL,
-        );
-        if result.0 as isize <= 32 {
-            diagnose::log(failure_message);
-        }
+    if !native_interop::open_web_url(Some(hwnd), url) {
+        diagnose::log(failure_message);
     }
 }
 
 /// How often the watchdog thread polls for an explorer.exe restart (which
 /// recreates the taskbar and wipes our tray-icon registration).
 const TASKBAR_WATCH_INTERVAL_SECS: u64 = 2;
+
+const TASKBAR_COLLISION_REPOSITION: usize = 2;
+
+/// How long the UI thread may stay unresponsive before the hang watchdog treats
+/// the widget as wedged and replaces it with a fresh process. Long enough that a
+/// slow repaint or a busy shell never costs a relaunch.
+const UI_HANG_RECOVERY_SECS: u64 = 30;
+
+/// Consecutive unanswered probes required on top of that delay. Elapsed time
+/// alone would also count a system sleep that began while a probe was failing,
+/// and relaunch on wake after a single missed probe on either side of it.
+const UI_HANG_MIN_SILENT_PROBES: u32 = 10;
+
+/// A long scheduling gap (for example, system sleep) breaks a run of probes.
+const UI_HANG_MAX_PROBE_GAP_SECS: u64 = 10;
+
+/// How long a single liveness probe waits for the UI thread to answer.
+const UI_PROBE_TIMEOUT_MS: u32 = 1_000;
+
+/// Environment counter of back-to-back hang relaunches. A replacement that
+/// freezes in turn, behind an explorer.exe that stays hung for instance, is
+/// given twice as long as the previous one before the next attempt, instead of
+/// being replaced every half minute for as long as the cause lasts.
+const ENV_HANG_RELAUNCHES: &str = "CCUM_HANG_RELAUNCHES";
+
+/// A hang relaunch only extends the streak when the replacement freezes within
+/// this long of being started; past it, the next hang starts over at 30 s.
+const HANG_STREAK_WINDOW_SECS: u64 = 600;
+
+/// Cap on the doubling: 30 s, then 1, 2, 4 and at most 8 minutes.
+const HANG_BACKOFF_MAX_DOUBLINGS: u32 = 4;
+
+/// Stable controller handle published for the hang watchdog outside of `STATE`.
+///
+/// The hang watchdog has to diagnose a wedged UI thread even when that thread
+/// is wedged while holding the state mutex, so it never takes that lock. Written
+/// once, right after the window is created.
+static CONTROLLER_HWND: AtomicIsize = AtomicIsize::new(0);
+
+/// Prevent duplicate recovery attempts by the UI hang watchdog.
+static RELAUNCH_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 static SUPPRESS_TRAY_REPOSITION_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
 
@@ -262,7 +343,7 @@ fn migrated_theme_placement(legacy: LegacyPlacement) -> (usize, i32) {
     let display_index = taskbars
         .get(legacy.taskbar_index)
         .or_else(|| taskbars.first())
-        .map(|taskbar| unsafe { MonitorFromWindow(taskbar.hwnd, MONITOR_DEFAULTTOPRIMARY) })
+        .and_then(|taskbar| native_interop::monitor_for_taskbar(&taskbars, &displays, taskbar.hwnd))
         .and_then(|monitor| {
             displays
                 .iter()
@@ -302,7 +383,8 @@ fn logical_host_dimension(physical: i32, scale: f64) -> u32 {
         .clamp(1.0, u32::MAX as f64) as u32
 }
 
-pub(crate) fn theme_runtime_for_surface(
+// The studio runs in a separate process without the monitor's layout cache.
+pub(crate) fn query_theme_runtime_for_surface(
     theme: &ThemeDocument,
     surface_index: usize,
     runtime: ThemeRuntime,
@@ -323,13 +405,13 @@ pub(crate) fn theme_runtime_for_surface(
         .nest
         .resolve(surface.placement.reference.region);
     let host_rect = if matches!(nest, SurfaceNest::Taskbar | SurfaceNest::TrayIcon) {
-        native_interop::find_taskbars()
-            .into_iter()
-            .find(|taskbar| unsafe {
-                MonitorFromWindow(taskbar.hwnd, MONITOR_DEFAULTTOPRIMARY) == display.handle
-            })
-            .map(|taskbar| taskbar.rect)
-            .unwrap_or(display.rect)
+        native_interop::taskbar_for_monitor(
+            &native_interop::find_taskbars(),
+            &displays,
+            display.handle,
+        )
+        .map(|taskbar| taskbar.rect)
+        .unwrap_or(display.rect)
     } else {
         display.rect
     };
@@ -355,16 +437,13 @@ const ENV_RELAUNCH: &str = "CCUM_RELAUNCH";
 /// the child so it can detect a relaunch storm.
 const ENV_LAST_RELAUNCH_UNIX: &str = "CCUM_LAST_RELAUNCH_UNIX";
 
-/// Relaunch the widget as a fresh process after explorer.exe has restarted.
-///
-/// When the shell restarts it destroys our embedded child window outright (the
-/// window is gone, not merely orphaned - `IsWindow` returns false) and leaves
-/// the UI thread parked in `GetMessage` with no window to recreate in place.
-/// Spawning a clean new process - which re-embeds into the freshly created
-/// taskbar - and exiting this one is the robust recovery. The child is flagged
-/// via `ENV_RELAUNCH` so it waits for this instance's single-instance mutex to
-/// be released before taking over (see the guard in `run`).
-fn relaunch_self() {
+/// A process restart is reserved for an unresponsive UI thread. Shell-hosted
+/// surface loss is recovered in place by the controller.
+fn relaunch_after_ui_hang(streak: u32) {
+    if RELAUNCH_IN_PROGRESS.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
     // Back off if we are relaunching very soon after the relaunch that spawned
     // us: that signals the shell is crash-looping, not a one-off restart.
     let now = now_unix_secs();
@@ -373,79 +452,315 @@ fn relaunch_self() {
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(0);
     if last != 0 && now.saturating_sub(last) < RELAUNCH_THROTTLE_SECS {
-        diagnose::log("relaunch storm detected; backing off before relaunching");
+        diagnose::log_recovery("relaunch storm detected; backing off before relaunching");
         std::thread::sleep(Duration::from_secs(RELAUNCH_BACKOFF_SECS));
     }
 
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
         Err(error) => {
-            diagnose::log_error("watchdog: unable to resolve current executable", error);
+            diagnose::log_recovery(format!(
+                "watchdog: unable to resolve current executable: {error}"
+            ));
+            RELAUNCH_IN_PROGRESS.store(false, Ordering::Release);
             return;
         }
     };
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match std::process::Command::new(exe)
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // Without this the replacement truncates the log on startup and takes the
+    // reason for its own relaunch with it - the one entry worth reading after
+    // the widget has recovered on its own. Diagnostics switched on from the
+    // dashboard leave no flag on the command line, and --diagnose-append is
+    // only read alongside --diagnose, so both are carried over.
+    if diagnose::is_enabled() {
+        for flag in ["--diagnose", "--diagnose-append"] {
+            if !args.iter().any(|arg| arg == flag) {
+                args.push(flag.to_string());
+            }
+        }
+    }
+    let mut command = std::process::Command::new(exe);
+    command
         .args(&args)
         .env(ENV_RELAUNCH, "1")
         .env(ENV_LAST_RELAUNCH_UNIX, now.to_string())
-        .spawn()
-    {
+        .env_remove(ENV_HANG_RELAUNCHES);
+    command.env(ENV_HANG_RELAUNCHES, streak.saturating_add(1).to_string());
+    match command.spawn() {
         Ok(_) => {
-            diagnose::log("watchdog: relaunched fresh instance, exiting old one");
+            diagnose::log_recovery("watchdog: relaunched fresh instance, exiting old one");
+            // Skip DLL detach on a wedged process: another thread may hold a
+            // lock needed by detach code. Recovery diagnostics are already flushed.
+            unsafe {
+                let _ = TerminateProcess(GetCurrentProcess(), 0);
+            }
             std::process::exit(0);
         }
         Err(error) => {
-            diagnose::log_error("watchdog: unable to spawn relaunched instance", error);
+            diagnose::log_recovery(format!(
+                "watchdog: unable to spawn relaunched instance: {error}"
+            ));
+            RELAUNCH_IN_PROGRESS.store(false, Ordering::Release);
         }
     }
 }
 
+/// Ask the UI thread to acknowledge an empty message.
+///
+/// The hang watchdog runs on its own thread, so `SendMessageTimeoutW` here is
+/// answered by the window's owning thread: it comes back at once while the
+/// message loop is pumping, and times out once that loop is parked inside a
+/// call that never returns.
+///
+/// The probe is sent every cycle rather than gated behind `IsHungAppWindow`,
+/// which stayed false while the UI thread of a taskbar-embedded widget was
+/// suspended, and only turned true once a frozen widget had been orphaned.
+fn ui_thread_responds(hwnd: HWND) -> bool {
+    unsafe {
+        // A missing controller is shutdown, not an unresponsive UI thread;
+        // calling it responsive keeps the two verdicts from overlapping.
+        if !IsWindow(Some(hwnd)).as_bool() {
+            return true;
+        }
+        let mut acknowledged = 0usize;
+        SendMessageTimeoutW(
+            hwnd,
+            WM_NULL,
+            WPARAM(0),
+            LPARAM(0),
+            SMTO_ABORTIFHUNG,
+            UI_PROBE_TIMEOUT_MS,
+            Some(&mut acknowledged),
+        )
+        .0 != 0
+    }
+}
+
+/// Relaunch the widget once its UI thread stops answering messages.
+///
+/// A UI thread parked in a call that never returns keeps every window handle
+/// valid and every parent alive, so the surface watchdog sees nothing wrong
+/// while the widget stops drawing and stops polling - in the case that prompted
+/// this, for well over an hour. The probe runs on its own thread and never
+/// takes the state mutex: a UI thread wedged while holding that lock is
+/// precisely what it has to survive, and the surface watchdog does take it.
+fn spawn_ui_hang_watchdog() {
+    std::thread::spawn(move || {
+        let mut silence: Option<UiSilence> = None;
+        loop {
+            std::thread::sleep(Duration::from_secs(TASKBAR_WATCH_INTERVAL_SECS));
+            // Stepping through the UI thread in a debugger leaves it as silent
+            // as a wedged one, and a relaunch would end the debugging session.
+            if unsafe { IsDebuggerPresent() }.as_bool() {
+                silence = None;
+                continue;
+            }
+            let primary = SendHwnd(CONTROLLER_HWND.load(Ordering::Relaxed)).to_hwnd();
+            if primary.is_invalid() || ui_thread_responds(primary) {
+                silence = None;
+                continue;
+            }
+            let now = Instant::now();
+            let current = silence.get_or_insert_with(|| {
+                UiSilence::new(
+                    now,
+                    hang_relaunch_streak(
+                        std::env::var(ENV_HANG_RELAUNCHES).ok().as_deref(),
+                        std::env::var(ENV_LAST_RELAUNCH_UNIX).ok().as_deref(),
+                        now_unix_secs(),
+                    ),
+                )
+            });
+            current.record_probe(now);
+            let delay = hang_recovery_delay(current.streak);
+            // Elapsed time rather than a cycle count alone: a probe that times
+            // out makes its own cycle longer than the sleep interval.
+            if current.recovery_due(now) {
+                let streak = current.streak;
+                diagnose::log_recovery(format!(
+                    "watchdog: UI thread stopped answering for {}s -> relaunching",
+                    delay.as_secs()
+                ));
+                silence = None;
+                relaunch_after_ui_hang(streak);
+            }
+        }
+    });
+}
+
+/// An unbroken run of unanswered probes, with the streak it is measured against.
+struct UiSilence {
+    since: Instant,
+    last_probe: Instant,
+    silent_probes: u32,
+    streak: u32,
+}
+
+impl UiSilence {
+    fn new(now: Instant, streak: u32) -> Self {
+        Self {
+            since: now,
+            last_probe: now,
+            silent_probes: 0,
+            streak,
+        }
+    }
+
+    fn record_probe(&mut self, now: Instant) {
+        if now.duration_since(self.last_probe) >= Duration::from_secs(UI_HANG_MAX_PROBE_GAP_SECS) {
+            self.since = now;
+            self.silent_probes = 0;
+        }
+        self.last_probe = now;
+        self.silent_probes = self.silent_probes.saturating_add(1);
+    }
+
+    fn recovery_due(&self, now: Instant) -> bool {
+        self.silent_probes >= UI_HANG_MIN_SILENT_PROBES
+            && now.duration_since(self.since) >= hang_recovery_delay(self.streak)
+    }
+}
+
+/// Back-to-back hang relaunches leading up to this process, read from the
+/// variables its parent set when relaunching it. A process that has been
+/// running past HANG_STREAK_WINDOW_SECS starts a fresh streak.
+fn hang_relaunch_streak(
+    hang_relaunches: Option<&str>,
+    last_relaunch_unix: Option<&str>,
+    now_unix: u64,
+) -> u32 {
+    let started = last_relaunch_unix
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    if started == 0 || now_unix.saturating_sub(started) >= HANG_STREAK_WINDOW_SECS {
+        return 0;
+    }
+    hang_relaunches
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0)
+}
+
+/// Silence tolerated before a relaunch, doubled for each back-to-back hang.
+fn hang_recovery_delay(streak: u32) -> Duration {
+    Duration::from_secs(UI_HANG_RECOVERY_SECS << streak.min(HANG_BACKOFF_MAX_DOUBLINGS))
+}
+
 /// Detect explorer.exe restarts and recover from them.
 ///
-/// Explorer owns both taskbar and desktop surface hosts. When it restarts, any
-/// child widget windows are destroyed; if the primary window was hosted there,
-/// the UI message loop is lost as well. A dedicated thread checks all native
-/// surface handles and relaunches after the shell has returned.
+/// Shell recovery is posted to the controller, which recreates missing surfaces
+/// on their owning UI thread without disturbing polling or dashboard state.
 fn spawn_taskbar_watchdog() {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(TASKBAR_WATCH_INTERVAL_SECS));
-        let (shell_hosted, windows) = {
-            let state = lock_state();
-            let Some(state) = state.as_ref() else {
-                continue;
-            };
-            let shell_hosted = state.active_theme.as_ref().is_some_and(|theme| {
-                theme.surfaces.iter().any(|surface| {
-                    matches!(
-                        surface
-                            .placement
-                            .nest
-                            .resolve(surface.placement.reference.region),
-                        SurfaceNest::Taskbar | SurfaceNest::Desktop
-                    )
-                })
-            });
-            (
-                shell_hosted,
-                std::iter::once(state.hwnd)
-                    .chain(state.mirror_hwnds.iter().copied())
-                    .chain(state.desktop_hwnds.iter().flatten().copied())
-                    .collect::<Vec<_>>(),
-            )
-        };
-        if !shell_hosted {
-            continue;
+        let controller = controller_for(HWND::default());
+        if controller.is_invalid() {
+            return;
         }
-        let invalid = windows
-            .iter()
-            .any(|window| unsafe { !IsWindow(Some(window.to_hwnd())).as_bool() });
-        if invalid && !native_interop::find_taskbars().is_empty() {
-            diagnose::log("watchdog: shell-hosted surface was destroyed -> relaunching");
-            relaunch_self();
+        unsafe {
+            let _ = PostMessageW(Some(controller), WM_APP_RECONCILE, WPARAM(0), LPARAM(0));
+        }
+
+        static LAST_WATCHDOG_TRAY_RECT: Mutex<Option<RECT>> = Mutex::new(None);
+        let (reposition_target, current_tray_rect) = {
+            let state = lock_state();
+            if let Some(s) = state.as_ref() {
+                let tray_hwnd = s.tray_notify_hwnd.map(|h| h.to_hwnd());
+                let target_hwnd = controller_for(s.hwnd.to_hwnd());
+                (
+                    target_hwnd,
+                    tray_hwnd.and_then(native_interop::get_window_rect_safe),
+                )
+            } else {
+                (HWND::default(), None)
+            }
+        };
+        if !reposition_target.is_invalid() && current_tray_rect.is_some() {
+            let mut last_rect = LAST_WATCHDOG_TRAY_RECT
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if rect_changed(*last_rect, current_tray_rect) {
+                *last_rect = current_tray_rect;
+                unsafe {
+                    let _ = PostMessageW(
+                        Some(reposition_target),
+                        native_interop::WM_APP_TRAY_REPOSITION,
+                        WPARAM(0),
+                        LPARAM(0),
+                    );
+                }
+            }
+        }
+
+        let collision_action = lock_state().as_ref().and_then(|state| {
+            taskbar_collision_action(state)
+                .map(|action| (controller_for(state.hwnd.to_hwnd()), action))
+        });
+
+        if let Some((target_hwnd, action)) = collision_action {
+            unsafe {
+                let _ = PostMessageW(
+                    Some(target_hwnd),
+                    native_interop::WM_APP_TASKBAR_COLLISION,
+                    WPARAM(action),
+                    LPARAM(0),
+                );
+            }
         }
     });
+}
+
+fn taskbar_collision_action(state: &AppState) -> Option<usize> {
+    if state.dragging || state.pending_drag || state.is_switching_window_style {
+        return None;
+    }
+    let taskbar = state.taskbar_hwnd?.to_hwnd();
+    let bounds = native_interop::get_taskbar_rect(taskbar)?;
+    // Do not interpret an auto-hide slide or reveal strip as a capacity change.
+    if !unsafe { IsWindowVisible(taskbar).as_bool() } || !taskbar_collision::taskbar_shown(bounds) {
+        return None;
+    }
+    if state.auto_ejected {
+        let target = restored_dock_rect(state, taskbar, bounds)?;
+        if taskbar_lock_applies(state) {
+            return (!positioning::taskbar_ejection_required(bounds, target, false, true))
+                .then_some(0);
+        }
+        let occupancy = taskbar_collision::cached(taskbar, bounds)?;
+        let margin = if state.auto_ejected_for_capacity {
+            0
+        } else {
+            (20.0 * CURRENT_DPI.load(Ordering::Relaxed) as f64 / 96.0).round() as i32
+        };
+        occupancy.can_restore(target, margin).then_some(0)
+    } else if state.embedded
+        && state
+            .placement_override
+            .as_ref()
+            .is_none_or(|p| p.nest != "floating")
+    {
+        let widget = native_interop::get_window_rect_safe(state.hwnd.to_hwnd())?;
+        let locked = taskbar_lock_applies(state);
+        // A layout pass during a slide can leave a stale child offset. Restore
+        // the configured position before deciding the layout cannot fit.
+        if positioning::taskbar_ejection_required(bounds, widget, false, locked)
+            && restored_dock_rect(state, taskbar, bounds).is_some_and(|target| {
+                positioning::taskbar_reposition_required(bounds, widget, target, locked)
+            })
+        {
+            return Some(TASKBAR_COLLISION_REPOSITION);
+        }
+        // Visibility fallback needs only native geometry; an unavailable or
+        // stale accessibility sample must not leave the widget clipped.
+        let overlaps_apps = if positioning::taskbar_surface_is_clipped(bounds, widget) || locked {
+            false
+        } else {
+            taskbar_collision::cached(taskbar, bounds)?.overlaps_app_controls(widget)
+        };
+        positioning::taskbar_ejection_required(bounds, widget, overlaps_apps, locked).then_some(1)
+    } else {
+        None
+    }
 }
 
 static STATE: Mutex<Option<AppState>> = Mutex::new(None);
@@ -462,9 +777,29 @@ fn theme_runtime_from_state(state: &AppState) -> ThemeRuntime {
         state.auth_error_paused_polling,
         state.data.as_ref(),
     );
+    let nest = if state.auto_ejected {
+        SurfaceNest::Floating
+    } else if let Some(ref ov) = state.placement_override {
+        if ov.nest == "floating" {
+            SurfaceNest::Floating
+        } else {
+            SurfaceNest::Taskbar
+        }
+    } else {
+        SurfaceNest::Taskbar
+    };
+    let opacity = state.floating_card_opacity.unwrap_or(85);
     ThemeRuntime::from_providers(state.providers)
         .with_poll_state(poll_ok, has_error)
         .with_language(state.language)
+        .with_countdown(state.usage_countdown)
+        .with_nest(nest)
+        .with_floating_card_opacity(opacity)
+        .with_antigravity_pools(
+            state.show_antigravity_gemini,
+            state.show_antigravity_external,
+            state.crossfade_opacity,
+        )
 }
 
 /// A transient outage can keep presenting the last real reading while its
@@ -476,18 +811,153 @@ fn poll_display_state(
     auth_error_paused_polling: bool,
     data: Option<&AppUsageData>,
 ) -> (bool, bool) {
+    if let Some(data) = data.filter(|data| !data.accounts.is_empty()) {
+        let has_error = data.accounts.iter().any(|account| account.error.is_some());
+        return (
+            !data.is_empty(),
+            data.is_empty() && (has_error || retry_count > 0),
+        );
+    }
     let has_usable_stale_data = !auth_error_paused_polling
         && data.is_some_and(|data| data.iter().any(|(_, usage)| usage.stale));
     (
         last_poll_ok || has_usable_stale_data,
-        retry_count > 0 && !has_usable_stale_data,
+        // A partial-failure retry after an overall success is not an error.
+        !last_poll_ok && retry_count > 0 && !has_usable_stale_data,
     )
 }
 
 fn effective_theme_from_state(state: &AppState) -> Option<ThemeDocument> {
-    state.active_theme.as_ref().map(|theme| {
+    theme_with_placement(state, state.auto_ejected)
+}
+
+fn theme_with_placement(state: &AppState, auto_ejected: bool) -> Option<ThemeDocument> {
+    let mut theme = state.active_theme.as_ref().map(|theme| {
         theme_engine::apply_mouse_action_overrides(theme, &state.mouse_action_overrides)
-    })
+    })?;
+    let floating = if auto_ejected {
+        state.auto_ejected_origin.map(|point| (None, point))
+    } else {
+        state
+            .placement_override
+            .as_ref()
+            .filter(|p| p.nest == "floating")
+            .map(|p| {
+                (
+                    Some((p.monitor_index, p.monitor_device.clone())),
+                    POINT {
+                        x: p.screen_x,
+                        y: p.screen_y,
+                    },
+                )
+            })
+    };
+    if let Some((saved_monitor, point)) = floating {
+        let displays = native_interop::find_monitors();
+        let selected = saved_monitor
+            .and_then(|(index, device)| {
+                positioning::resolve_saved_monitor(&displays, index, device.as_deref())
+            })
+            .and_then(|index| displays.get(index).copied().map(|d| (index, d)))
+            .unwrap_or_else(|| positioning::monitor_for_point(&displays, point));
+        apply_floating_position(&mut theme, state, selected.0, selected.1, point);
+    } else if let Some(p) = state
+        .placement_override
+        .as_ref()
+        .filter(|p| p.nest == "taskbar")
+    {
+        let displays = native_interop::find_monitors();
+        let index = positioning::resolve_saved_monitor(
+            &displays,
+            p.monitor_index,
+            p.monitor_device.as_deref(),
+        )
+        .unwrap_or(0);
+        let horizontal = taskbar_is_horizontal(index);
+        let placement = if p.screen_x > 0 || p.screen_y > 0 {
+            let offset = if horizontal { p.screen_x } else { p.screen_y };
+            positioning::taskbar_dock_placement(index, offset, display_scale(index), horizontal)
+        } else {
+            positioning::dock_placement(index, p.tray_offset, display_scale(index), horizontal)
+        };
+        positioning::override_primary_placement(&mut theme, placement);
+    }
+    Some(theme)
+}
+
+fn apply_floating_position(
+    theme: &mut ThemeDocument,
+    state: &AppState,
+    index: usize,
+    display: native_interop::DisplayMonitor,
+    point: POINT,
+) {
+    let mut placement = positioning::floating_placement(index);
+    let saved_host = if state.auto_ejected {
+        state.auto_ejected_host.as_ref()
+    } else {
+        state
+            .placement_override
+            .as_ref()
+            .and_then(|p| p.floating_host.as_ref())
+    };
+    placement.host_dimensions =
+        floating_host_for_theme(theme, saved_host).map(|host| (host.width, host.height));
+    positioning::override_primary_placement(theme, placement.clone());
+    let scale = monitor_scale(display);
+    let runtime = theme_runtime_for_surface(theme, 0, theme_runtime_from_state(state));
+    let frame = positioning::widget_frame(theme, state.data.as_ref(), runtime, scale);
+    let offset = positioning::clamped_floating_offset(point, display.rect, &frame, scale);
+    placement.offset_x = offset.x;
+    placement.offset_y = offset.y;
+    positioning::override_primary_placement(theme, placement);
+}
+
+/// Resolve the actual rectangle that will be restored, including authored
+/// placement or a saved drag offset. The watchdog must test this same target.
+fn restored_dock_rect(state: &AppState, taskbar: HWND, taskbar_rect: RECT) -> Option<RECT> {
+    let theme = theme_with_placement(state, false)?;
+    let surface = theme.surfaces.first()?;
+    if surface
+        .placement
+        .nest
+        .resolve(surface.placement.reference.region)
+        != SurfaceNest::Taskbar
+    {
+        return None;
+    }
+    let displays = native_interop::find_monitors();
+    let display = displays
+        .get(surface.placement.reference.display)
+        .or_else(|| displays.first())?;
+    if native_interop::taskbar_for_monitor(
+        &native_interop::find_taskbars(),
+        &displays,
+        display.handle,
+    )
+    .map(|candidate| candidate.hwnd)
+        != Some(taskbar)
+    {
+        return None;
+    }
+    let runtime = theme_runtime_for_surface(&theme, 0, theme_runtime_from_state(state));
+    let scale = monitor_scale(*display);
+    let frame = positioning::widget_frame(&theme, state.data.as_ref(), runtime, scale);
+    let offsets = theme_engine::resolve_surface_placement(&theme, 0, state.data.as_ref(), runtime);
+    let mut placement = surface.placement.clone();
+    placement.offset_x = offsets.offset_x;
+    placement.offset_y = offsets.offset_y;
+    let tray = native_interop::find_child_window(taskbar, "TrayNotifyWnd")
+        .and_then(native_interop::get_window_rect_safe);
+    Some(positioning::surface_screen_rect(
+        &placement,
+        frame.width,
+        frame.height,
+        scale,
+        display.rect,
+        Some(taskbar_rect),
+        tray,
+    ))
 }
 
 fn theme_has_floating_surface(theme: &ThemeDocument) -> bool {
@@ -500,27 +970,41 @@ fn theme_has_floating_surface(theme: &ThemeDocument) -> bool {
     })
 }
 
+fn window_state_timer_required(state: &AppState) -> bool {
+    state.custom_theme_enabled
+        && effective_theme_from_state(state)
+            .as_ref()
+            .is_some_and(theme_has_floating_surface)
+}
+
 fn sync_window_state_timer(hwnd: HWND) {
-    let required = {
-        let state = lock_state();
-        state.as_ref().is_some_and(|state| {
-            state.custom_theme_enabled
-                && state
-                    .active_theme
-                    .as_ref()
-                    .is_some_and(theme_has_floating_surface)
-        })
-    };
+    let required = lock_state()
+        .as_ref()
+        .is_some_and(window_state_timer_required);
+    set_window_state_timer(hwnd, required);
+}
+
+fn set_window_state_timer(hwnd: HWND, required: bool) {
+    {
+        let mut state = lock_state();
+        let Some(state) = state.as_mut() else {
+            return;
+        };
+        if required == state.window_state_timer_active {
+            return;
+        }
+        state.window_state_timer_active = required;
+    }
     unsafe {
         if required {
-            SetTimer(
+            set_controller_timer(
                 Some(hwnd),
                 TIMER_WINDOW_STATE,
                 WINDOW_STATE_INTERVAL_MS,
                 None,
             );
         } else {
-            let _ = KillTimer(Some(hwnd), TIMER_WINDOW_STATE);
+            let _ = kill_controller_timer(Some(hwnd), TIMER_WINDOW_STATE);
         }
     }
 }
@@ -540,11 +1024,19 @@ fn save_state_settings() {
             .map(|language| language.code().to_string());
         persisted.last_update_check_unix = s.last_update_check_unix;
         persisted.set_enabled_providers(s.providers);
+        // Pool flags are only meaningful while Antigravity is enabled; persisting
+        // them as on for a disabled provider would re-enable it on the next load.
+        let antigravity_on = s.providers.contains(ProviderId::Antigravity);
+        persisted.show_antigravity_gemini = Some(antigravity_on && s.show_antigravity_gemini);
+        persisted.show_antigravity_external = Some(antigravity_on && s.show_antigravity_external);
         persisted.custom_theme_enabled = s.custom_theme_enabled;
         persisted.active_theme_path = s
             .active_theme_path
             .as_ref()
             .map(|path| path.to_string_lossy().to_string());
+        persisted.placement_override = s.placement_override.clone();
+        persisted.floating_card_opacity = s.floating_card_opacity;
+        persisted.lock_taskbar = s.lock_taskbar;
         // The dashboard process owns its dimensions, so leave the freshly
         // loaded values unchanged when monitor actions persist settings.
         if let Err(error) = save_settings(&persisted) {
@@ -559,41 +1051,251 @@ fn save_settings_or_log(settings: &SettingsFile, context: &str) {
     }
 }
 
+pub(super) fn toggle_taskbar_lock(hwnd: HWND) {
+    let enabled = {
+        let mut state = lock_state();
+        let Some(state) = state.as_mut() else {
+            return;
+        };
+        state.lock_taskbar = !state.lock_taskbar;
+        state.lock_taskbar
+    };
+    save_state_settings();
+    if enabled {
+        redock_locked_widget(hwnd);
+    }
+    diagnose::log(format!("taskbar lock toggled: {enabled}"));
+}
+
+#[cfg(test)]
 fn tray_usage_summary_lines(
     data: &AppUsageData,
     providers: ProviderSet,
     language: LanguageId,
+    countdown: bool,
+) -> Vec<String> {
+    tray_usage_summary_lines_with_pools(data, providers, language, countdown, true, true)
+}
+
+fn tray_usage_summary_lines_with_pools(
+    data: &AppUsageData,
+    providers: ProviderSet,
+    language: LanguageId,
+    countdown: bool,
+    show_antigravity_gemini: bool,
+    show_antigravity_external: bool,
+) -> Vec<String> {
+    usage_summary_lines(
+        data,
+        providers,
+        language,
+        countdown,
+        show_antigravity_gemini,
+        show_antigravity_external,
+        None,
+    )
+}
+
+fn usage_summary_lines(
+    data: &AppUsageData,
+    providers: ProviderSet,
+    language: LanguageId,
+    countdown: bool,
+    show_antigravity_gemini: bool,
+    show_antigravity_external: bool,
+    detailed_at: Option<SystemTime>,
 ) -> Vec<String> {
     let strings = language.strings();
-    providers
-        .iter()
-        .filter_map(|provider| {
-            let usage = data.get(provider)?;
+    let shown = |percentage: f64| {
+        if countdown {
+            100.0 - percentage
+        } else {
+            percentage
+        }
+    };
+    let window_text = |section: &crate::models::UsageSection| {
+        if section.available {
+            if let Some(now) = detailed_at {
+                let percentage = format!("{:.1}%", shown(section.percentage));
+                match section.resets_at {
+                    Some(reset) => format!(
+                        "{percentage} ({})",
+                        widget_tooltip::reset_countdown(reset, now, &strings)
+                    ),
+                    None => percentage,
+                }
+            } else {
+                format!("{:.0}%", shown(section.percentage))
+            }
+        } else {
+            "--".to_string()
+        }
+    };
+    let mut lines = Vec::new();
+    for provider in providers.iter() {
+        if provider == ProviderId::Antigravity {
+            let base_name = language.text(provider.descriptor().display_name);
+            let acct = data.selected_account_name(provider);
+            if show_antigravity_gemini {
+                if let Some(usage) = data.get(provider) {
+                    let weekly_label = usage
+                        .weekly_label
+                        .as_deref()
+                        .unwrap_or(strings.weekly_window);
+                    let session_label = usage
+                        .session_label
+                        .as_deref()
+                        .unwrap_or(strings.session_window);
+                    let label = match acct {
+                        Some(name) => format!("{base_name} (Gemini, {name})"),
+                        None => format!("{base_name} (Gemini)"),
+                    };
+                    lines.push(format!(
+                        "{} {}: {} | {}: {}",
+                        label,
+                        session_label,
+                        window_text(&usage.session),
+                        weekly_label,
+                        window_text(&usage.weekly),
+                    ));
+                }
+            }
+            if show_antigravity_external {
+                if data.get(provider).is_some() && data.antigravity_external().is_none() {
+                    let label = match acct {
+                        Some(name) => format!("{base_name} (Claude/GPT, {name})"),
+                        None => format!("{base_name} (Claude/GPT)"),
+                    };
+                    lines.push(format!("{label}: --"));
+                }
+                if let Some(usage) = data.antigravity_external() {
+                    let weekly_label = usage
+                        .weekly_label
+                        .as_deref()
+                        .unwrap_or(strings.weekly_window);
+                    let session_label = usage
+                        .session_label
+                        .as_deref()
+                        .unwrap_or(strings.session_window);
+                    let label = match acct {
+                        Some(name) => format!("{base_name} (Claude/GPT, {name})"),
+                        None => format!("{base_name} (Claude/GPT)"),
+                    };
+                    lines.push(format!(
+                        "{} {}: {} | {}: {}",
+                        label,
+                        session_label,
+                        window_text(&usage.session),
+                        weekly_label,
+                        window_text(&usage.weekly),
+                    ));
+                }
+            }
+        } else {
+            let Some(usage) = data.get(provider) else {
+                continue;
+            };
             let descriptor = provider.descriptor();
             let weekly_label = usage
                 .weekly_label
                 .as_deref()
                 .unwrap_or(strings.weekly_window);
-            Some(format!(
-                "{} {}: {:.0}% | {}: {:.0}%",
-                language.text(descriptor.display_name),
-                strings.session_window,
-                usage.session.percentage,
+            let session_label = usage
+                .session_label
+                .as_deref()
+                .unwrap_or(strings.session_window);
+            lines.push(format!(
+                "{} {}: {} | {}: {}",
+                match data.selected_account_name(provider) {
+                    Some(name) => format!("{} ({name})", language.text(descriptor.display_name)),
+                    None => language.text(descriptor.display_name).to_string(),
+                },
+                session_label,
+                if detailed_at.is_some() {
+                    window_text(&usage.session)
+                } else {
+                    format!("{:.0}%", shown(usage.session.percentage))
+                },
                 weekly_label,
-                usage.weekly.percentage,
-            ))
-        })
-        .collect()
+                if detailed_at.is_some() {
+                    window_text(&usage.weekly)
+                } else {
+                    format!("{:.0}%", shown(usage.weekly.percentage))
+                },
+            ));
+        }
+    }
+    lines
 }
 
 fn tray_usage_summary_from_state() -> Option<String> {
     let state = lock_state();
     let state = state.as_ref()?;
+    let errors = tray_error_lines(
+        state.data.as_ref(),
+        state.last_poll_failure,
+        state.providers,
+        state.language,
+    );
+    if !errors.is_empty() {
+        return Some(errors.join("\n"));
+    }
     if !state.last_poll_ok {
         return None;
     }
-    let lines = tray_usage_summary_lines(state.data.as_ref()?, state.providers, state.language);
+    let lines = tray_usage_summary_lines_with_pools(
+        state.data.as_ref()?,
+        state.providers,
+        state.language,
+        state.usage_countdown,
+        state.show_antigravity_gemini,
+        state.show_antigravity_external,
+    );
     (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+fn tray_error_lines(
+    data: Option<&AppUsageData>,
+    failure: Option<poller::PollFailure>,
+    providers: ProviderSet,
+    language: LanguageId,
+) -> Vec<String> {
+    let mut accounts: Vec<_> = data
+        .into_iter()
+        .flat_map(|data| &data.accounts)
+        .filter(|account| {
+            providers.contains(account.provider)
+                && account.profile.enabled
+                && account.error.is_some()
+        })
+        .collect();
+    // Windows truncates tray tooltips: put the selected account's error first.
+    accounts.sort_by_key(|account| !account.selected);
+    let mut lines: Vec<_> = accounts
+        .into_iter()
+        .map(|account| {
+            format!(
+                "{} ({}): {}",
+                language.text(account.provider.descriptor().display_name),
+                account.profile.name,
+                account.error.unwrap().message(language),
+            )
+        })
+        .collect();
+    if let Some(failure) = failure.filter(|failure| providers.contains(failure.provider)) {
+        if !data.is_some_and(|data| {
+            data.accounts
+                .iter()
+                .any(|account| account.provider == failure.provider && account.error.is_some())
+        }) {
+            lines.push(format!(
+                "{}: {}",
+                language.text(failure.provider.descriptor().display_name),
+                failure.error.message(language)
+            ));
+        }
+    }
+    lines
 }
 
 fn tray_icon_tooltip_from_state() -> String {
@@ -606,6 +1308,8 @@ fn tray_icon_tooltip_from_state() -> String {
 }
 
 fn sync_tray_icon(hwnd: HWND) {
+    let hwnd = controller_for(hwnd);
+    widget_tooltip::refresh();
     let usage_tooltip = tray_usage_summary_from_state();
     let themed = {
         let state = lock_state();
@@ -716,103 +1420,6 @@ fn taskbar_created_message() -> u32 {
     })
 }
 
-fn attach_to_taskbar(hwnd: HWND, requested_index: usize) -> bool {
-    let taskbars = native_interop::find_taskbars();
-    if taskbars.is_empty() {
-        diagnose::log("taskbar not found; using fallback popup window");
-        return false;
-    }
-
-    let index = requested_index.min(taskbars.len().saturating_sub(1));
-    let taskbar = taskbars[index];
-    diagnose::log(format!(
-        "taskbar selected index={index} count={} hwnd={:?} rect=({}, {}, {}, {})",
-        taskbars.len(),
-        taskbar.hwnd,
-        taskbar.rect.left,
-        taskbar.rect.top,
-        taskbar.rect.right,
-        taskbar.rect.bottom
-    ));
-
-    let old_hook = {
-        let mut state = lock_state();
-        state.as_mut().and_then(|s| s.win_event_hook.take())
-    };
-    if let Some(hook) = old_hook {
-        native_interop::unhook_win_event(hook.to_hook());
-    }
-
-    native_interop::embed_in_taskbar(hwnd, taskbar.hwnd);
-
-    let tray_notify = native_interop::find_child_window(taskbar.hwnd, "TrayNotifyWnd");
-    if tray_notify.is_some() {
-        diagnose::log("TrayNotifyWnd found");
-    } else {
-        diagnose::log("TrayNotifyWnd not found");
-    }
-
-    let hook = tray_notify.and_then(|tray_hwnd| {
-        let thread_id = native_interop::get_window_thread_id(tray_hwnd);
-        native_interop::set_tray_event_hook(thread_id, on_tray_location_changed)
-    });
-    if hook.is_some() {
-        diagnose::log("tray event hook installed");
-    } else {
-        diagnose::log("tray event hook could not be installed");
-    }
-
-    let mut state = lock_state();
-    if let Some(s) = state.as_mut() {
-        s.taskbar_hwnd = Some(SendHwnd::from_hwnd(taskbar.hwnd));
-        s.tray_notify_hwnd = tray_notify.map(SendHwnd::from_hwnd);
-        s.win_event_hook = hook.map(SendWinEventHook::from_hook);
-        s.taskbar_index = index;
-        s.embedded = true;
-    }
-    true
-}
-
-fn taskbar_at_point(pt: POINT) -> Option<(usize, native_interop::TaskbarWindow)> {
-    native_interop::find_taskbars()
-        .into_iter()
-        .enumerate()
-        .find(|(_, taskbar)| {
-            pt.x >= taskbar.rect.left
-                && pt.x < taskbar.rect.right
-                && pt.y >= taskbar.rect.top
-                && pt.y < taskbar.rect.bottom
-        })
-}
-
-fn tray_left_for_taskbar(taskbar_hwnd: HWND, taskbar_rect: RECT) -> i32 {
-    let mut tray_left = taskbar_rect.right;
-    if let Some(tray_hwnd) = native_interop::find_child_window(taskbar_hwnd, "TrayNotifyWnd") {
-        if let Some(tray_rect) = native_interop::get_window_rect_safe(tray_hwnd) {
-            tray_left = tray_rect.left;
-        }
-    }
-    tray_left
-}
-
-fn clamp_offset_for_taskbar(taskbar_hwnd: HWND, taskbar_rect: RECT, offset: i32) -> i32 {
-    let tray_left = tray_left_for_taskbar(taskbar_hwnd, taskbar_rect);
-    let max_offset = (tray_left - taskbar_rect.left - total_widget_width()).max(0);
-    offset.clamp(0, max_offset)
-}
-
-fn offset_for_drop_point(
-    taskbar_hwnd: HWND,
-    taskbar_rect: RECT,
-    pt: POINT,
-    drag_start_client_x: i32,
-) -> i32 {
-    let tray_left = tray_left_for_taskbar(taskbar_hwnd, taskbar_rect);
-    let desired_left = pt.x - taskbar_rect.left - drag_start_client_x;
-    let offset = tray_left - taskbar_rect.left - total_widget_width() - desired_left;
-    clamp_offset_for_taskbar(taskbar_hwnd, taskbar_rect, offset)
-}
-
 fn now_unix_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -832,12 +1439,8 @@ fn auto_update_check_due(last_update_check_unix: Option<u64>) -> bool {
     now_unix_secs().saturating_sub(last_update_check_unix) >= update_check_interval().as_secs()
 }
 
-// Desarmado junto de begin_update_check/run_update_check: nunca reagenda o
-// timer TIMER_UPDATE_CHECK, só garante que ele fique parado.
 fn schedule_auto_update_check(hwnd: HWND) {
-    unsafe {
-        let _ = KillTimer(Some(hwnd), TIMER_UPDATE_CHECK);
-    }
+    let _ = hwnd;
 }
 
 #[allow(dead_code)]
@@ -858,9 +1461,9 @@ fn run_schedule_auto_update_check(hwnd: HWND) {
     };
 
     unsafe {
-        let _ = KillTimer(Some(hwnd), TIMER_UPDATE_CHECK);
+        let _ = kill_controller_timer(Some(hwnd), TIMER_UPDATE_CHECK);
         if let Some(delay_ms) = delay_ms {
-            SetTimer(Some(hwnd), TIMER_UPDATE_CHECK, delay_ms.max(1), None);
+            set_controller_timer(Some(hwnd), TIMER_UPDATE_CHECK, delay_ms.max(1), None);
         }
     }
 }
@@ -898,10 +1501,17 @@ fn show_error_message(hwnd: HWND, title: &str, message: &str) {
     }
 }
 
-fn show_update_prompt(hwnd: HWND, strings: Strings, release: &ReleaseDescriptor) -> bool {
+fn begin_update_install(hwnd: HWND, update: AvailableUpdate) {
+    match update {
+        AvailableUpdate::Release(release) => begin_update_apply(hwnd, release),
+        AvailableUpdate::Winget { .. } => begin_winget_update(hwnd),
+    }
+}
+
+fn show_update_prompt(hwnd: HWND, strings: Strings, update: &AvailableUpdate) -> bool {
     let message = strings
         .update_prompt_now
-        .replace("{version}", &release.latest_version);
+        .replace("{version}", update.version());
 
     unsafe {
         let title_wide = native_interop::wide_str(strings.update_available);
@@ -940,17 +1550,13 @@ fn update_language_change() -> bool {
     true
 }
 
-// Este fork não expõe verificação de atualizações — nem automática, nem
-// manual pelo menu (histórico original do fork, commit a7c3222). O corpo
-// original fica preservado em run_update_check(), sem uso, para manter a
-// superfície de conflito mínima em futuras sincronizações com o upstream.
 fn begin_update_check(hwnd: HWND, interactive: bool) {
     let _ = (hwnd, interactive);
 }
 
 #[allow(dead_code)]
-fn run_update_check(hwnd: HWND, interactive: bool) {
-    let send_hwnd = SendHwnd::from_hwnd(hwnd);
+fn run_begin_update_check(hwnd: HWND, interactive: bool) {
+    let send_hwnd = SendHwnd::from_hwnd(controller_for(hwnd));
     let (strings, install_channel) = {
         let mut state = lock_state();
         let Some(app_state) = state.as_mut() else {
@@ -972,19 +1578,21 @@ fn run_update_check(hwnd: HWND, interactive: bool) {
         }
 
         app_state.update_status = UpdateStatus::Checking;
+        publish_update_status(app_state);
         (app_state.language.strings(), app_state.install_channel)
     };
 
     std::thread::spawn(move || {
         let hwnd = send_hwnd.to_hwnd();
         let checked_at = now_unix_secs();
-        match updater::check_for_updates() {
+        match updater::check_for_updates(install_channel) {
             Ok(UpdateCheckResult::UpToDate) => {
                 {
                     let mut state = lock_state();
                     if let Some(s) = state.as_mut() {
                         s.update_status = UpdateStatus::UpToDate;
                         s.last_update_check_unix = Some(checked_at);
+                        publish_update_status(s);
                     }
                 }
                 save_state_settings();
@@ -1000,20 +1608,21 @@ fn run_update_check(hwnd: HWND, interactive: bool) {
                     );
                 }
             }
-            Ok(UpdateCheckResult::Available(release)) => {
+            Ok(UpdateCheckResult::Available(update)) => {
                 {
                     let mut state = lock_state();
                     if let Some(s) = state.as_mut() {
-                        s.update_status = UpdateStatus::Available(release.clone());
+                        s.update_status = UpdateStatus::Available(update.clone());
                         s.last_update_check_unix = Some(checked_at);
                     }
                 }
                 save_state_settings();
-                if interactive && show_update_prompt(hwnd, strings, &release) {
-                    match install_channel {
-                        InstallChannel::Portable => begin_update_apply(hwnd, release),
-                        InstallChannel::Winget => begin_winget_update(hwnd),
-                    }
+                if interactive && show_update_prompt(hwnd, strings, &update) {
+                    begin_update_install(hwnd, update);
+                }
+                // Keep the dashboard busy until the install prompt is dismissed.
+                if let Some(state) = lock_state().as_ref() {
+                    publish_update_status(state);
                 }
                 unsafe {
                     let _ = PostMessageW(
@@ -1030,6 +1639,7 @@ fn run_update_check(hwnd: HWND, interactive: bool) {
                     if let Some(s) = state.as_mut() {
                         s.update_status = UpdateStatus::Idle;
                         s.last_update_check_unix = Some(checked_at);
+                        publish_update_status(s);
                     }
                 }
                 save_state_settings();
@@ -1051,7 +1661,7 @@ fn run_update_check(hwnd: HWND, interactive: bool) {
 }
 
 fn begin_update_apply(hwnd: HWND, release: ReleaseDescriptor) {
-    let send_hwnd = SendHwnd::from_hwnd(hwnd);
+    let send_hwnd = SendHwnd::from_hwnd(controller_for(hwnd));
     let strings = {
         let mut state = lock_state();
         let Some(app_state) = state.as_mut() else {
@@ -1071,6 +1681,7 @@ fn begin_update_apply(hwnd: HWND, release: ReleaseDescriptor) {
         }
 
         app_state.update_status = UpdateStatus::Applying;
+        publish_update_status(app_state);
         app_state.language.strings()
     };
 
@@ -1084,7 +1695,9 @@ fn begin_update_apply(hwnd: HWND, release: ReleaseDescriptor) {
                 {
                     let mut state = lock_state();
                     if let Some(s) = state.as_mut() {
-                        s.update_status = UpdateStatus::Available(release);
+                        s.update_status =
+                            UpdateStatus::Available(AvailableUpdate::Release(release));
+                        publish_update_status(s);
                     }
                 }
                 let message = format!("{}.\n\n{}", strings.update_failed, error);
@@ -1103,17 +1716,31 @@ fn begin_update_apply(hwnd: HWND, release: ReleaseDescriptor) {
 }
 
 fn begin_winget_update(hwnd: HWND) {
-    let strings = {
-        let state = lock_state();
-        state.as_ref().map(|s| s.language.strings())
-    }
-    .unwrap_or(LanguageId::English.strings());
+    let (strings, previous_status) = {
+        let mut state = lock_state();
+        let Some(state) = state.as_mut() else {
+            return;
+        };
+        if matches!(
+            state.update_status,
+            UpdateStatus::Checking | UpdateStatus::Applying
+        ) {
+            return;
+        }
+        let previous_status = std::mem::replace(&mut state.update_status, UpdateStatus::Applying);
+        publish_update_status(state);
+        (state.language.strings(), previous_status)
+    };
 
     match updater::begin_winget_update() {
         Ok(()) => unsafe {
             let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
         },
         Err(error) => {
+            if let Some(state) = lock_state().as_mut() {
+                state.update_status = previous_status;
+                publish_update_status(state);
+            }
             let message = format!("{}.\n\n{}", strings.update_failed, error);
             show_error_message(hwnd, strings.updates, &message);
         }
@@ -1235,19 +1862,91 @@ pub(crate) fn set_startup_enabled(enable: bool) {
 }
 
 fn total_widget_width_for_state(state: &AppState) -> i32 {
-    effective_theme_from_state(state)
-        .as_ref()
-        .map_or(1, |theme| {
+    widget_frame_for_state(state, None).width
+}
+
+fn widget_frame_for_state(state: &AppState, nest: Option<SurfaceNest>) -> positioning::WidgetFrame {
+    effective_theme_from_state(state).as_ref().map_or(
+        positioning::WidgetFrame {
+            width: 1,
+            height: 1,
+            content_width: 1,
+            inset: 0,
+        },
+        |theme| {
             let runtime = theme_runtime_for_surface(theme, 0, theme_runtime_from_state(state));
-            let width =
-                theme_engine::resolve_surface_size(theme, 0, state.data.as_ref(), runtime).0;
-            // The theme expresses width/height in logical pixels; the window
-            // itself is sized and moved in physical pixels. Skipping this on
-            // a scaled monitor left callers positioning against the wrong
-            // (smaller) box, which is what made the widget drift while
-            // being dragged there.
-            scaled_theme_dimension(width, theme_surface_scale(theme, 0))
-        })
+            let mut runtime = nest.map_or(runtime, |nest| runtime.with_nest(nest));
+            if nest == Some(SurfaceNest::Floating) {
+                if let Some(host) = floating_host_for_theme(theme, None) {
+                    runtime = runtime.with_host_dimensions(host.width, host.height);
+                }
+            }
+            let scale = theme_surface_scale(theme, 0);
+            positioning::widget_frame(theme, state.data.as_ref(), runtime, scale)
+        },
+    )
+}
+
+fn floating_frame_for_state(
+    state: &AppState,
+    display_index: usize,
+    scale: f64,
+) -> Option<positioning::WidgetFrame> {
+    let mut theme = effective_theme_from_state(state)?;
+    let mut placement = positioning::floating_placement(display_index);
+    placement.host_dimensions =
+        floating_host_for_theme(&theme, None).map(|host| (host.width, host.height));
+    positioning::override_primary_placement(&mut theme, placement);
+    let runtime = theme_runtime_for_surface(&theme, 0, theme_runtime_from_state(state));
+    Some(positioning::widget_frame(
+        &theme,
+        state.data.as_ref(),
+        runtime,
+        scale,
+    ))
+}
+
+fn clear_auto_ejection(state: &mut AppState) {
+    state.auto_ejected = false;
+    state.auto_ejected_for_capacity = false;
+    state.auto_ejected_origin = None;
+    state.auto_ejected_host = None;
+}
+
+fn replace_active_theme(state: &mut AppState, loaded: ThemeDocument, path: Option<PathBuf>) {
+    // A fallback belongs to the configured root that was ejected. Preserve it
+    // during ordinary refreshes, but never carry it into a new theme or host.
+    let changed = state.active_theme.as_ref().is_none_or(|current| {
+        current.id != loaded.id
+            || current.surfaces.first().map(|s| (&s.id, &s.placement))
+                != loaded.surfaces.first().map(|s| (&s.id, &s.placement))
+    }) || path
+        .as_ref()
+        .is_some_and(|p| state.active_theme_path.as_ref() != Some(p));
+    if changed {
+        clear_auto_ejection(state);
+    }
+    state.active_theme = Some(loaded);
+    if path.is_some() {
+        state.active_theme_path = path;
+    }
+}
+
+fn update_configured_placement(
+    state: &mut AppState,
+    placement: Option<PlacementOverride>,
+    taskbar_index: usize,
+    tray_offset: i32,
+) {
+    if state.placement_override != placement
+        || state.taskbar_index != taskbar_index
+        || state.tray_offset != tray_offset
+    {
+        clear_auto_ejection(state);
+    }
+    state.placement_override = placement;
+    state.taskbar_index = taskbar_index;
+    state.tray_offset = tray_offset;
 }
 
 fn apply_custom_theme(
@@ -1272,16 +1971,13 @@ fn apply_custom_theme(
             return Err("Application is not ready".into());
         };
         state.custom_theme_enabled = true;
-        state.active_theme = Some(loaded);
+        replace_active_theme(state, loaded, path);
         state.theme_clock_interval = theme_clock_interval;
         state.tray_theme_uses_current_time = tray_theme_uses_current_time;
         state.mouse_action_overrides.clear();
         state.hovered_mouse_layer = None;
         state.pending_mouse_click = None;
         state.suppress_next_left_up = false;
-        if path.is_some() {
-            state.active_theme_path = path;
-        }
         state.embedded = false;
         state.win_event_hook.take()
     };
@@ -1290,7 +1986,7 @@ fn apply_custom_theme(
     }
     unsafe {
         native_interop::make_popup(hwnd, false);
-        reset_layered_window(hwnd);
+        ensure_layered_window(hwnd);
         let _ = SetWindowPos(
             hwnd,
             Some(HWND_NOTOPMOST),
@@ -1301,14 +1997,70 @@ fn apply_custom_theme(
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
         );
     }
-    sync_custom_mirrors();
+    sync_surface_windows();
     sync_window_state_timer(hwnd);
     schedule_countdown_timer();
     schedule_clock_timer();
     Ok(())
 }
 
-fn sync_custom_mirrors() {
+fn sync_surface_windows() {
+    sync_surface_windows_with(|| unsafe { create_desktop_surface_window() });
+}
+
+fn sync_surface_windows_with(mut create_desktop: impl FnMut() -> HWND) {
+    let primary = lock_state().as_ref().map(|state| state.hwnd.to_hwnd());
+    let Some(primary) = primary else {
+        return;
+    };
+    if !lifecycle::surface_has_class(primary, "ClaudeCodeUsageSurface") {
+        let replacement = unsafe { lifecycle::create_primary_surface() };
+        if replacement.is_invalid() {
+            diagnose::log_recovery("unable to recreate primary surface; will retry");
+            return;
+        }
+        if let Some(state) = lock_state().as_mut() {
+            state.hwnd = SendHwnd::from_hwnd(replacement);
+            state.embedded = false;
+            state.taskbar_hwnd = None;
+            state.tray_notify_hwnd = None;
+            state.dragging = false;
+            state.pending_drag = false;
+            state.auto_ejected = false;
+            state.auto_ejected_for_capacity = false;
+            state.auto_ejected_origin = None;
+            state.auto_ejected_host = None;
+            state.is_snapped = false;
+            state.is_switching_window_style = false;
+            state.pending_mouse_click = None;
+            state.hovered_mouse_layer = None;
+            set_window_title(replacement, state.language.strings());
+        }
+        diagnose::log_recovery(format!("recreated primary surface hwnd={replacement:?}"));
+    }
+    let mirrors = lock_state()
+        .as_ref()
+        .map(|state| state.mirror_hwnds.clone())
+        .unwrap_or_default();
+    for (index, mirror) in mirrors.into_iter().enumerate() {
+        if !lifecycle::surface_has_class(mirror.to_hwnd(), "CCUMThemeMirror") {
+            let replacement = unsafe { create_mirror_window() };
+            // Window creation can re-enter; never index a list it may shrink.
+            let orphaned = match lock_state()
+                .as_mut()
+                .and_then(|state| state.mirror_hwnds.get_mut(index))
+            {
+                Some(slot) => {
+                    *slot = SendHwnd::from_hwnd(replacement);
+                    false
+                }
+                None => true,
+            };
+            if orphaned {
+                unsafe { lifecycle::destroy_surface(replacement) };
+            }
+        }
+    }
     let (desired_total, desktop_surfaces) = {
         let state = lock_state();
         state
@@ -1349,7 +2101,7 @@ fn sync_custom_mirrors() {
         };
         match remove {
             Some(hwnd) => unsafe {
-                let _ = DestroyWindow(hwnd.to_hwnd());
+                lifecycle::destroy_surface(hwnd.to_hwnd());
             },
             None => break,
         }
@@ -1374,13 +2126,18 @@ fn sync_custom_mirrors() {
         let Some(state) = state.as_mut() else {
             return;
         };
+        let removed = if state.desktop_hwnds.len() > desired_total {
+            state.desktop_hwnds.split_off(desired_total)
+        } else {
+            Vec::new()
+        };
         state.desktop_hwnds.resize_with(desired_total, || None);
-        let removed = state.desktop_hwnds.split_off(desired_total);
         let mut stale = removed.into_iter().flatten().collect::<Vec<_>>();
         for (surface_index, window) in state.desktop_hwnds.iter_mut().enumerate() {
             let wanted = desktop_surfaces.get(surface_index) == Some(&true);
-            let valid =
-                window.is_some_and(|window| unsafe { IsWindow(Some(window.to_hwnd())).as_bool() });
+            let valid = window.is_some_and(|window| {
+                lifecycle::surface_has_class(window.to_hwnd(), "CCUMDesktopSurface")
+            });
             if !wanted || !valid {
                 if let Some(window) = window.take() {
                     stale.push(window);
@@ -1391,7 +2148,11 @@ fn sync_custom_mirrors() {
     };
     for window in stale_desktop_windows {
         unsafe {
-            let _ = DestroyWindow(window.to_hwnd());
+            if lifecycle::surface_has_class(window.to_hwnd(), "CCUMDesktopSurface") {
+                lifecycle::destroy_surface(window.to_hwnd());
+            } else {
+                crate::desktop_compositor::remove(window.to_hwnd());
+            }
         }
     }
     for (surface_index, wanted) in desktop_surfaces.into_iter().enumerate() {
@@ -1405,7 +2166,7 @@ fn sync_custom_mirrors() {
         if !missing {
             continue;
         }
-        let window = unsafe { create_desktop_surface_window() };
+        let window = create_desktop();
         if window.is_invalid() {
             continue;
         }
@@ -1419,7 +2180,7 @@ fn sync_custom_mirrors() {
             *slot = Some(SendHwnd::from_hwnd(window));
         } else {
             unsafe {
-                let _ = DestroyWindow(window);
+                lifecycle::destroy_surface(window);
             }
         }
     }
@@ -1429,6 +2190,10 @@ unsafe fn create_desktop_surface_window() -> HWND {
     let Some(desktop) = native_interop::find_desktop_host() else {
         return HWND::default();
     };
+    create_desktop_surface_window_in(desktop)
+}
+
+unsafe fn create_desktop_surface_window_in(desktop: native_interop::DesktopHost) -> HWND {
     let instance = GetModuleHandleW(PCWSTR::null()).unwrap();
     let class = native_interop::wide_str("CCUMDesktopSurface");
     let title = native_interop::wide_str("");
@@ -1515,11 +2280,16 @@ unsafe extern "system" fn mirror_wnd_proc(
             update_mouse_hover(hwnd, lparam);
             LRESULT(0)
         }
+        WM_MOUSEHOVER => {
+            widget_tooltip::show(hwnd);
+            LRESULT(0)
+        }
         WM_MOUSELEAVE => {
             clear_mouse_hover(hwnd);
             LRESULT(0)
         }
         WM_LBUTTONUP => {
+            widget_tooltip::hide();
             let suppressed = {
                 let mut state = lock_state();
                 state.as_mut().is_some_and(|state| {
@@ -1536,12 +2306,14 @@ unsafe extern "system" fn mirror_wnd_proc(
             LRESULT(0)
         }
         WM_LBUTTONDBLCLK => {
+            widget_tooltip::hide();
             if let Some((surface, object)) = mouse_target_at(hwnd, lparam) {
                 dispatch_double_click(hwnd, surface, object);
             }
             LRESULT(0)
         }
         WM_RBUTTONUP => {
+            widget_tooltip::hide();
             if let Some((surface, object)) = mouse_target_at(hwnd, lparam) {
                 let _ = dispatch_mouse_event(surface, &object, MouseEventKind::RightClick);
             }
@@ -1555,7 +2327,7 @@ unsafe extern "system" fn mirror_wnd_proc(
         }
         WM_ERASEBKGND => LRESULT(1),
         WM_DESTROY => {
-            crate::desktop_compositor::remove(hwnd);
+            lifecycle::surface_destroyed(hwnd);
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -1563,14 +2335,7 @@ unsafe extern "system" fn mirror_wnd_proc(
 }
 
 fn total_widget_height_for_state(state: &AppState) -> i32 {
-    effective_theme_from_state(state)
-        .as_ref()
-        .map_or(1, |theme| {
-            let runtime = theme_runtime_for_surface(theme, 0, theme_runtime_from_state(state));
-            let height =
-                theme_engine::resolve_surface_size(theme, 0, state.data.as_ref(), runtime).1;
-            scaled_theme_dimension(height, theme_surface_scale(theme, 0))
-        })
+    widget_frame_for_state(state, None).height
 }
 
 fn total_widget_height() -> i32 {
@@ -1600,14 +2365,15 @@ pub fn run() {
     }
     diagnose::log("window::run started");
 
-    // Single-instance guard: silently exit if another instance is running.
-    // Exception: when relaunched after an explorer restart (ENV_RELAUNCH set),
+    // Single-instance guard: silently exit if another instance is running in this session.
+    // Use the local namespace so other users' desktop/RDP sessions remain independent.
+    // Exception: when relaunched after a UI hang (ENV_RELAUNCH set),
     // wait for the previous instance to release the mutex, then take over.
     let is_relaunch = std::env::var(ENV_RELAUNCH).is_ok();
     let mutex_name = native_interop::wide_str(&if allow_multiple {
-        format!("Global\\ClaudeCodeUsageMonitor-{}", std::process::id())
+        format!("Local\\ClaudeCodeUsageMonitor-{}", std::process::id())
     } else {
-        "Global\\ClaudeCodeUsageMonitor".to_string()
+        "Local\\ClaudeCodeUsageMonitor".to_string()
     });
     let _mutex = unsafe {
         let handle = CreateMutexW(None, true, PCWSTR::from_raw(mutex_name.as_ptr()));
@@ -1654,7 +2420,7 @@ pub fn run() {
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
-            lpfnWndProc: Some(wnd_proc),
+            lpfnWndProc: Some(lifecycle::controller_wnd_proc),
             hInstance: HINSTANCE(hinstance.0),
             hIcon: large_icon,
             hIconSm: small_icon,
@@ -1754,39 +2520,32 @@ pub fn run() {
         let language = localization::resolve_language(language_override);
         let install_channel = updater::current_install_channel();
 
-        // Create as layered popup (will be reparented into taskbar)
+        refresh_theme_host_geometry();
+
+        // Hidden top-level lifetime owner: receives shell broadcasts and is
+        // never parented into Explorer. The public class stays stable for IPC.
         let title = native_interop::wide_str(language.strings().window_title);
-        let initial_runtime = ThemeRuntime::from_providers(settings.enabled_providers())
-            .with_poll_state(false, false)
-            .with_language(language);
-        let (initial_width, initial_height) = active_theme
-            .as_ref()
-            .map(|theme| {
-                let initial_runtime = theme_runtime_for_surface(theme, 0, initial_runtime);
-                let (width, height) =
-                    theme_engine::resolve_surface_size(theme, 0, None, initial_runtime);
-                let scale = theme_surface_scale(theme, 0);
-                (
-                    scaled_theme_dimension(width, scale),
-                    scaled_theme_dimension(height, scale),
-                )
-            })
-            .unwrap_or((1, 1));
-        let hwnd = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE,
+        let controller = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             PCWSTR::from_raw(class_name.as_ptr()),
             PCWSTR::from_raw(title.as_ptr()),
             WS_POPUP,
             0,
             0,
-            initial_width,
-            initial_height,
+            0,
+            0,
             None,
             None,
             Some(HINSTANCE(hinstance.0)),
             None,
         )
-        .unwrap();
+        .expect("create application controller");
+        CONTROLLER_HWND.store(SendHwnd::from_hwnd(controller).0, Ordering::Relaxed);
+        let hwnd = lifecycle::create_primary_surface();
+        if hwnd.is_invalid() {
+            let _ = DestroyWindow(controller);
+            return;
+        }
 
         if !large_icon.is_invalid() {
             let _ = SendMessageW(
@@ -1806,6 +2565,7 @@ pub fn run() {
         }
 
         diagnose::log(format!("main window created hwnd={:?}", hwnd));
+        diagnose::log(format!("controller window created hwnd={controller:?}"));
 
         let is_dark = theme::is_dark_mode();
         {
@@ -1821,6 +2581,10 @@ pub fn run() {
                 language,
                 install_channel,
                 providers: settings.enabled_providers(),
+                show_antigravity_gemini: settings.antigravity_gemini_enabled(),
+                show_antigravity_external: settings.antigravity_external_enabled(),
+                crossfade_opacity: 1.0,
+                accounts: settings.accounts.clone(),
                 data: None,
                 poll_interval_ms: settings.poll_interval_ms,
                 retry_count: 0,
@@ -1831,16 +2595,28 @@ pub fn run() {
                 ),
                 auth_watch_snapshot: Vec::new(),
                 last_poll_ok: false,
+                last_poll_failure: None,
                 update_status: UpdateStatus::Idle,
                 last_update_check_unix: settings.last_update_check_unix,
                 taskbar_index: settings.taskbar_index,
                 tray_offset: settings.tray_offset,
                 dragging: false,
-                left_press_pending: false,
-                drag_start_mouse_x: 0,
+                pending_drag: false,
+                drag_start_cursor: POINT::default(),
+                drag_start_origin: POINT::default(),
                 drag_start_client_x: 0,
-                drag_start_offset: 0,
+                auto_ejected: false,
+                auto_ejected_for_capacity: false,
+                auto_ejected_origin: None,
+                auto_ejected_host: None,
+                lock_taskbar: settings.lock_taskbar,
+                is_switching_window_style: false,
+                is_snapped: false,
+                placement_override: settings.placement_override.clone(),
+                floating_card_opacity: settings.floating_card_opacity,
+                window_state_timer_active: false,
                 custom_theme_enabled,
+                usage_countdown: settings.usage_countdown,
                 active_theme_path,
                 active_theme,
                 theme_clock_interval,
@@ -1854,11 +2630,14 @@ pub fn run() {
             });
         }
 
-        if let Err(error) = crate::dashboard::start_request_listener(hwnd) {
+        if let Some(state) = lock_state().as_ref() {
+            publish_update_status(state);
+        }
+        if let Err(error) = crate::dashboard::start_request_listener(controller) {
             diagnose::log_error("dashboard request listener failed", error);
         }
 
-        sync_custom_mirrors();
+        sync_surface_windows();
         native_interop::make_popup(hwnd, false);
 
         // Register the persistent application tray icon.
@@ -1871,12 +2650,23 @@ pub fn run() {
         diagnose::log("window shown");
 
         // Initial render using the presenter selected by the surface nest.
-        render_layered();
         schedule_countdown_timer();
         schedule_clock_timer();
+        let startup_dual_mode = {
+            let state = lock_state();
+            state.as_ref().is_some_and(|s| {
+                s.show_antigravity_gemini
+                    && s.show_antigravity_external
+                    && s.providers.contains(ProviderId::Antigravity)
+            })
+        };
+        if startup_dual_mode {
+            arm_crossfade_schedule(hwnd);
+        }
+        render_layered();
 
         if open_dashboard_on_start {
-            crate::dashboard::show(hwnd);
+            crate::dashboard::show(controller_for(hwnd));
         }
 
         // Poll timer: 15 minutes
@@ -1887,15 +2677,14 @@ pub fn run() {
                 .map(|s| s.poll_interval_ms)
                 .unwrap_or(POLL_15_MIN)
         };
-        SetTimer(Some(hwnd), TIMER_POLL, initial_poll_ms, None);
+        set_controller_timer(Some(hwnd), TIMER_POLL, initial_poll_ms, None);
         sync_window_state_timer(hwnd);
 
-        // Watch for explorer.exe restarts so we can re-embed and re-add the tray
-        // icon (the shell discards tray registrations when it restarts). This
-        // runs on a dedicated thread, NOT a window timer: once explorer destroys
-        // the taskbar, our embedded child window stops receiving all messages
-        // (WM_TIMER included), so a timer would never fire again.
+        // Sample collision geometry off-thread and ask the stable controller to
+        // reconcile shell-hosted windows every two seconds.
+        taskbar_collision::spawn_reader();
         spawn_taskbar_watchdog();
+        spawn_ui_hang_watchdog();
 
         // Initial poll
         if !no_poll {
@@ -1933,7 +2722,7 @@ pub fn run() {
 /// its nest: DirectComposition for desktop and layered windows elsewhere.
 fn render_layered() {
     refresh_dpi();
-    sync_custom_mirrors();
+    sync_surface_windows();
     let (hwnd_val, active_theme, usage_data, runtime, mirror_hwnds, desktop_hwnds) = {
         let state = lock_state();
         let Some(state) = state.as_ref() else {
@@ -1953,6 +2742,7 @@ fn render_layered() {
     // install Classic in memory when a selected theme cannot be loaded.
     let theme = active_theme.unwrap_or_else(ThemeDocument::starter);
     let hwnd = hwnd_val.to_hwnd();
+    set_window_state_timer(hwnd, theme_has_floating_surface(&theme));
     let target_count = theme.surfaces.len();
     for surface_index in 0..target_count {
         let regular_hwnd = if surface_index == 0 {
@@ -1977,10 +2767,13 @@ fn render_layered() {
                 .get(surface_index)
                 .and_then(|window| *window)
                 .map(SendHwnd::to_hwnd)
-                .unwrap_or(regular_hwnd)
+                .unwrap_or_default()
         } else {
             regular_hwnd
         };
+        if target_hwnd.is_invalid() {
+            continue;
+        }
         if nest == SurfaceNest::TrayIcon {
             unsafe {
                 let _ = ShowWindow(target_hwnd, SW_HIDE);
@@ -2024,7 +2817,10 @@ fn render_layered() {
         );
         positioned.placement.offset_x = placement.offset_x;
         positioned.placement.offset_y = placement.offset_y;
-        position_custom_theme(target_hwnd, &positioned, scale);
+        let hosted = position_custom_theme(target_hwnd, &positioned, scale);
+        if !hosted {
+            continue;
+        }
         if desktop_nested {
             unsafe {
                 let _ = ShowWindow(target_hwnd, SW_SHOWNOACTIVATE);
@@ -2080,29 +2876,48 @@ fn request_poll_inner(hwnd: HWND, queue_if_busy: bool) {
     {
         if queue_if_busy {
             POLL_PENDING.store(true, Ordering::Release);
+            diagnose::log("poll already running; manual refresh queued");
         }
         return;
     }
-    let send_hwnd = SendHwnd::from_hwnd(hwnd);
-    std::thread::spawn(move || poll_worker(send_hwnd));
+    let send_hwnd = SendHwnd::from_hwnd(controller_for(hwnd));
+    std::thread::spawn(move || poll_worker(send_hwnd, !queue_if_busy));
 }
 
-fn poll_worker(send_hwnd: SendHwnd) {
+/// Run credential watching under the same in-flight guard as usage polling.
+/// Timer ticks cannot pile up workers, and manual refreshes still queue behind
+/// a slow credential scan. Credential changes do not synthesize manual actions.
+fn poll_worker(send_hwnd: SendHwnd, scheduled: bool) {
+    run_poll_worker(&POLL_IN_FLIGHT, &POLL_PENDING, scheduled, |scheduled| {
+        if !scheduled || scheduled_poll_needed() {
+            do_poll_once(send_hwnd.to_hwnd());
+        }
+    });
+}
+
+fn run_poll_worker(
+    in_flight: &AtomicBool,
+    pending: &AtomicBool,
+    mut scheduled: bool,
+    mut poll: impl FnMut(bool),
+) {
     loop {
-        do_poll_once(send_hwnd.to_hwnd());
-        if POLL_PENDING.swap(false, Ordering::AcqRel) {
+        poll(scheduled);
+        // Any queued request is an explicit refresh, not another timer tick.
+        scheduled = false;
+        if pending.swap(false, Ordering::AcqRel) {
             continue;
         }
 
-        POLL_IN_FLIGHT.store(false, Ordering::Release);
-        if !POLL_PENDING.swap(false, Ordering::AcqRel) {
+        in_flight.store(false, Ordering::Release);
+        if !pending.swap(false, Ordering::AcqRel) {
             break;
         }
 
         // A request can arrive between the pending check and releasing the
         // in-flight flag. Reacquire ownership unless that request already
         // started a replacement worker.
-        if POLL_IN_FLIGHT
+        if in_flight
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
@@ -2111,43 +2926,183 @@ fn poll_worker(send_hwnd: SendHwnd) {
     }
 }
 
-fn do_poll_once(hwnd: HWND) {
-    let enabled_providers = {
+fn scheduled_poll_needed() -> bool {
+    let watch = {
         let state = lock_state();
+        let Some(state) = state.as_ref() else {
+            return false;
+        };
+        if !state.auth_error_paused_polling {
+            return true;
+        }
+        (
+            state.auth_watch_mode,
+            state.auth_watch_snapshot.clone(),
+            state.providers,
+            state.accounts.clone(),
+        )
+    };
+    // No STATE lock is held while reading files, credentials, or WSL.
+    let current = poller::credential_watch_snapshot(watch.0);
+    current != watch.1
+        && lock_state().as_ref().is_some_and(|state| {
+            state.auth_error_paused_polling
+                && state.auth_watch_mode == watch.0
+                && state.auth_watch_snapshot == watch.1
+                && state.providers == watch.2
+                && state.accounts == watch.3
+        })
+}
+
+fn is_partial_poll_retry_error(error: poller::PollError) -> bool {
+    matches!(
+        error,
+        poller::PollError::NetworkError | poller::PollError::HttpStatus(429 | 500..=599)
+    )
+}
+
+// Successful polls retry only transient account failures, including unselected
+// accounts with carried stale data. Missing or stale readings alone do not
+// establish that a failure is transient.
+fn partial_poll_retry_delay_ms(
+    data: &AppUsageData,
+    enabled: ProviderSet,
+    accounts: &crate::accounts::AccountSettings,
+    retry_count: u32,
+    interval_ms: u32,
+    cooldown_ms: u32,
+) -> Option<u32> {
+    let needs_retry = enabled.iter().any(|provider| {
+        if accounts.get(provider).is_some() {
+            data.accounts.iter().any(|account| {
+                account.provider == provider
+                    && account.profile.enabled
+                    && account.error.is_some_and(is_partial_poll_retry_error)
+                    && account.usage.as_ref().is_none_or(|usage| usage.stale)
+            })
+        } else {
+            // Providers without profiles do not retain their last error.
+            false
+        }
+    });
+    needs_retry.then(|| {
+        let backoff =
+            RETRY_BASE_MS.saturating_mul(1u32.checked_shl(retry_count).unwrap_or(u32::MAX));
+        backoff.min(interval_ms).max(cooldown_ms).min(0x7fff_ffff)
+    })
+}
+
+fn do_poll_once(hwnd: HWND) {
+    let poll_started = Instant::now();
+    let (enabled_providers, accounts, previous, force) = {
+        let mut state = lock_state();
         state
-            .as_ref()
-            .map(|state| state.providers)
+            .as_mut()
+            .map(|state| {
+                (
+                    state.providers,
+                    state.accounts.clone(),
+                    state.data.clone(),
+                    std::mem::take(&mut state.force_notify_auth_error),
+                )
+            })
             .unwrap_or_default()
     };
 
-    match poller::poll(enabled_providers) {
+    diagnose::log_lazy(|| format!("poll started providers={enabled_providers:?} force={force}"));
+    let result = poller::poll(
+        enabled_providers,
+        &accounts,
+        previous.as_ref(),
+        force,
+        |update| {
+            let cache_data = {
+                let mut state = lock_state();
+                let Some(state) = state.as_mut() else {
+                    return;
+                };
+                // A result from an old provider/account selection must not be shown.
+                if state.providers != enabled_providers || state.accounts != accounts {
+                    return;
+                }
+                let data = poller::merge_poll_progress(
+                    update,
+                    &state.data.clone().unwrap_or_default(),
+                    &accounts,
+                );
+                state.data = Some(data.clone());
+                state.last_poll_ok = true;
+                state.last_poll_failure = None;
+                data
+            };
+            // The dashboard runs separately and follows the same cache as the
+            // widget. Publish before waiting for slower providers to finish.
+            if let Err(error) = app_settings::save_usage_cache(&cache_data, true) {
+                diagnose::log_error("unable to save partial usage cache", error);
+            }
+            unsafe {
+                let _ = PostMessageW(Some(hwnd), WM_APP_USAGE_UPDATED, WPARAM(0), LPARAM(0));
+            }
+        },
+    );
+    match result {
         Ok(data) => {
             let mut state = lock_state();
-            let data = match state.as_ref().and_then(|s| s.data.as_ref()) {
+            if state
+                .as_ref()
+                .is_some_and(|s| s.providers != enabled_providers || s.accounts != accounts)
+            {
+                return;
+            }
+            let mut data = match state.as_ref().and_then(|s| s.data.as_ref()) {
                 Some(previous) => poller::carry_forward_failures(data, previous, enabled_providers),
                 None => data,
             };
+            data.select_accounts(&accounts);
+            let notifications: Vec<_> = data
+                .new_auth_failures(previous.as_ref(), force)
+                .into_iter()
+                .map(|account| (account.provider, account.profile.name.clone()))
+                .collect();
+            let language = state
+                .as_ref()
+                .map(|state| state.language)
+                .unwrap_or(LanguageId::English);
             let cache_data = data.clone();
             if let Some(s) = state.as_mut() {
                 // Stop fast-poll if reset data is now fresh
                 if !poller::app_is_past_reset(&data) {
                     unsafe {
-                        let _ = KillTimer(Some(hwnd), TIMER_RESET_POLL);
+                        let _ = kill_controller_timer(Some(hwnd), TIMER_RESET_POLL);
                     }
                 }
 
+                let retry_ms = partial_poll_retry_delay_ms(
+                    &data,
+                    enabled_providers,
+                    &accounts,
+                    s.retry_count,
+                    s.poll_interval_ms,
+                    poller::retry_delay_ms(0, poll_started),
+                );
                 s.data = Some(data);
                 s.last_poll_ok = true;
+                s.last_poll_failure = None;
 
-                // Recovered from errors — restore normal poll interval
-                if s.retry_count > 0 {
+                // Retry partial failures; restore the normal interval after recovery.
+                if let Some(retry_ms) = retry_ms {
+                    s.retry_count = s.retry_count.saturating_add(1);
+                    unsafe {
+                        let _ = kill_controller_timer(Some(hwnd), TIMER_RESET_POLL);
+                        set_controller_timer(Some(hwnd), TIMER_POLL, retry_ms, None);
+                    }
+                } else if s.retry_count > 0 {
                     s.retry_count = 0;
                     let interval = s.poll_interval_ms;
                     unsafe {
-                        SetTimer(Some(hwnd), TIMER_POLL, interval, None);
+                        set_controller_timer(Some(hwnd), TIMER_POLL, interval, None);
                     }
                 }
-                s.force_notify_auth_error = false;
                 s.auth_error_paused_polling = false;
                 s.auth_watch_mode = poller::CredentialWatchMode::ActiveSource(
                     s.providers.first().unwrap_or_default(),
@@ -2155,15 +3110,52 @@ fn do_poll_once(hwnd: HWND) {
                 s.auth_watch_snapshot.clear();
             }
             drop(state);
-            let _ = app_settings::save_usage_cache(&cache_data, true);
+            match app_settings::save_usage_cache(&cache_data, true) {
+                Ok(()) => diagnose::log_lazy(|| {
+                    format!(
+                        "usage cache saved: accounts={} elapsed_ms={}",
+                        cache_data.accounts.len(),
+                        poll_started.elapsed().as_millis()
+                    )
+                }),
+                Err(error) => diagnose::log_error("unable to save usage cache", error),
+            }
+            if !notifications.is_empty() {
+                let body = notifications
+                    .iter()
+                    .map(|(provider, name)| {
+                        format!(
+                            "{} ({name}): {}",
+                            language.text(provider.descriptor().display_name),
+                            language.provider_auth_error(*provider).1
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                tray_icon::notify_balloon(hwnd, language.text("Sign in again"), &body);
+            }
 
             unsafe {
                 let _ = PostMessageW(Some(hwnd), WM_APP_USAGE_UPDATED, WPARAM(0), LPARAM(0));
             }
         }
         Err(failure) => {
+            diagnose::log_lazy(|| {
+                format!(
+                    "poll failed: {failure:?} elapsed_ms={}",
+                    poll_started.elapsed().as_millis()
+                )
+            });
+            if lock_state()
+                .as_ref()
+                .is_some_and(|s| s.providers != enabled_providers || s.accounts != accounts)
+            {
+                return;
+            }
             let auth_watch = match failure.error {
-                poller::PollError::AuthRequired | poller::PollError::TokenExpired => {
+                poller::PollError::AuthRequired
+                | poller::PollError::TokenExpired
+                | poller::PollError::HttpStatus(401 | 403) => {
                     let mode = poller::CredentialWatchMode::ActiveSource(failure.provider);
                     Some((mode, poller::credential_watch_snapshot(mode)))
                 }
@@ -2171,14 +3163,23 @@ fn do_poll_once(hwnd: HWND) {
                     let mode = poller::CredentialWatchMode::AllSources(failure.provider);
                     Some((mode, poller::credential_watch_snapshot(mode)))
                 }
-                poller::PollError::RequestFailed => None,
+                poller::PollError::RequestFailed
+                | poller::PollError::NetworkError
+                | poller::PollError::UnexpectedResponse
+                | poller::PollError::HttpStatus(_) => None,
             };
             // Distinguish auth-required errors from transient errors.
             let (notify_auth_error, cache_data, cache_poll_ok) = {
                 let mut state = lock_state();
+                if state
+                    .as_ref()
+                    .is_some_and(|s| s.providers != enabled_providers || s.accounts != accounts)
+                {
+                    return;
+                }
                 let mut should_notify = false;
                 if let Some(s) = state.as_mut() {
-                    if matches!(failure.error, poller::PollError::RequestFailed) {
+                    if failure.error.is_transient() {
                         if let Some(previous) = s.data.as_ref() {
                             let carried = poller::carry_forward_failures(
                                 AppUsageData::default(),
@@ -2189,27 +3190,31 @@ fn do_poll_once(hwnd: HWND) {
                         }
                     }
                     s.last_poll_ok = false;
+                    s.last_poll_failure = Some(failure);
                     match auth_watch {
                         Some((watch_mode, watch_snapshot)) => {
                             // Only show the balloon on the first failure so it doesn't spam.
-                            if s.retry_count == 0 || s.force_notify_auth_error {
+                            if s.retry_count == 0 || force {
                                 should_notify = true;
                             }
-                            s.force_notify_auth_error = false;
                             s.auth_error_paused_polling = true;
                             s.auth_watch_mode = watch_mode;
                             s.auth_watch_snapshot = watch_snapshot;
                             s.retry_count = s.retry_count.saturating_add(1);
                             unsafe {
-                                let _ = KillTimer(Some(hwnd), TIMER_POLL);
-                                let _ = KillTimer(Some(hwnd), TIMER_RESET_POLL);
-                                let _ = KillTimer(Some(hwnd), TIMER_COUNTDOWN);
-                                SetTimer(Some(hwnd), TIMER_POLL, s.poll_interval_ms, None);
+                                let _ = kill_controller_timer(Some(hwnd), TIMER_POLL);
+                                let _ = kill_controller_timer(Some(hwnd), TIMER_RESET_POLL);
+                                let _ = kill_controller_timer(Some(hwnd), TIMER_COUNTDOWN);
+                                set_controller_timer(
+                                    Some(hwnd),
+                                    TIMER_POLL,
+                                    s.poll_interval_ms,
+                                    None,
+                                );
                             }
                         }
                         _ => {
-                            // Transient network / credential-missing errors: exponential backoff.
-                            s.force_notify_auth_error = false;
+                            // Transient errors: exponential backoff, respecting server cooldowns.
                             s.auth_error_paused_polling = false;
                             s.auth_watch_mode = poller::CredentialWatchMode::ActiveSource(
                                 s.providers.first().unwrap_or_default(),
@@ -2219,10 +3224,13 @@ fn do_poll_once(hwnd: HWND) {
                             let backoff = RETRY_BASE_MS.saturating_mul(
                                 1u32.checked_shl(s.retry_count - 1).unwrap_or(u32::MAX),
                             );
-                            let retry_ms = backoff.min(s.poll_interval_ms);
+                            let retry_ms = poller::retry_delay_ms(
+                                backoff.min(s.poll_interval_ms),
+                                poll_started,
+                            );
                             unsafe {
-                                let _ = KillTimer(Some(hwnd), TIMER_RESET_POLL);
-                                SetTimer(Some(hwnd), TIMER_POLL, retry_ms, None);
+                                let _ = kill_controller_timer(Some(hwnd), TIMER_RESET_POLL);
+                                set_controller_timer(Some(hwnd), TIMER_POLL, retry_ms, None);
                             }
                         }
                     }
@@ -2276,22 +3284,22 @@ fn schedule_countdown_timer() {
     let hwnd = s.hwnd.to_hwnd();
     if !s.last_poll_ok {
         unsafe {
-            let _ = KillTimer(Some(hwnd), TIMER_COUNTDOWN);
-            let _ = KillTimer(Some(hwnd), TIMER_RESET_POLL);
+            let _ = kill_controller_timer(Some(hwnd), TIMER_COUNTDOWN);
+            let _ = kill_controller_timer(Some(hwnd), TIMER_RESET_POLL);
         }
         return;
     }
 
     // If a reset time has passed, poll every 5s to pick up fresh data
-    if s.data.as_ref().is_some_and(poller::app_is_past_reset) {
+    if s.retry_count == 0 && s.data.as_ref().is_some_and(poller::app_is_past_reset) {
         unsafe {
-            SetTimer(Some(hwnd), TIMER_RESET_POLL, 5_000, None);
+            set_controller_timer(Some(hwnd), TIMER_RESET_POLL, 5_000, None);
         }
     }
 
     let min_delay = s.data.as_ref().and_then(|data| {
-        data.iter()
-            .flat_map(|(_, usage)| [&usage.session, &usage.weekly])
+        data.all_usage()
+            .flat_map(|usage| usage.sections())
             .filter_map(|section| poller::time_until_display_change(section.resets_at))
             .min()
     });
@@ -2302,7 +3310,7 @@ fn schedule_countdown_timer() {
         .max(1000) as u32;
 
     unsafe {
-        SetTimer(Some(hwnd), TIMER_COUNTDOWN, ms, None);
+        set_controller_timer(Some(hwnd), TIMER_COUNTDOWN, ms, None);
     }
 }
 
@@ -2314,13 +3322,13 @@ fn schedule_clock_timer() {
     let hwnd = s.hwnd.to_hwnd();
     let Some(interval) = s.theme_clock_interval else {
         unsafe {
-            let _ = KillTimer(Some(hwnd), TIMER_CLOCK);
+            let _ = kill_controller_timer(Some(hwnd), TIMER_CLOCK);
         }
         return;
     };
     let ms = time_until_next_clock_refresh(interval).as_millis().max(1) as u32;
     unsafe {
-        SetTimer(Some(hwnd), TIMER_CLOCK, ms, None);
+        set_controller_timer(Some(hwnd), TIMER_CLOCK, ms, None);
     }
 }
 
@@ -2360,30 +3368,181 @@ fn check_language_change() {
     }
 }
 
+/// All widget surfaces use the same wall-clock phase, including after a
+/// settings change or a delayed timer following sleep.
+fn antigravity_crossfade_frame(now_ms: u64) -> (f64, u32) {
+    let phase = now_ms % 20_000;
+    let smooth = |elapsed: u64| {
+        let t = elapsed as f64 / 2_000.0;
+        t * t * (3.0 - 2.0 * t)
+    };
+    match phase {
+        0..8_000 => (1.0, (8_000 - phase) as u32),
+        8_000..10_000 => (1.0 - smooth(phase - 8_000), 30),
+        10_000..18_000 => (0.0, (18_000 - phase) as u32),
+        _ => (smooth(phase - 18_000), 30),
+    }
+}
+
+pub(super) fn arm_crossfade_schedule(hwnd: HWND) {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    let (opacity, delay_ms) = antigravity_crossfade_frame(now_ms);
+    let mut state = lock_state();
+    let dual_mode = state.as_ref().is_some_and(|state| {
+        state.show_antigravity_gemini
+            && state.show_antigravity_external
+            && state.providers.contains(ProviderId::Antigravity)
+    });
+    if let Some(state) = state.as_mut() {
+        state.crossfade_opacity = if dual_mode { opacity } else { 1.0 };
+    }
+    unsafe {
+        if dual_mode {
+            let _ = set_controller_timer(Some(hwnd), TIMER_CROSSFADE_SCHEDULE, delay_ms, None);
+        } else {
+            let _ = kill_controller_timer(Some(hwnd), TIMER_CROSSFADE_SCHEDULE);
+        }
+    }
+}
+
 fn reload_external_settings(hwnd: HWND) {
     let settings = load_settings();
     let language_override = settings.language.as_deref().and_then(LanguageId::from_code);
     let theme_path = settings.active_theme_path.as_ref().map(PathBuf::from);
     let providers_changed;
+    let lock_enabled;
+    let antigravity_changed;
+    let dual_mode;
     {
         let mut state = lock_state();
         let Some(state) = state.as_mut() else {
             return;
         };
-        providers_changed = state.providers != settings.enabled_providers();
+        providers_changed =
+            state.providers != settings.enabled_providers() || state.accounts != settings.accounts;
+        let gemini_enabled = settings.antigravity_gemini_enabled();
+        let external_enabled = settings.antigravity_external_enabled();
+        antigravity_changed = state.show_antigravity_gemini != gemini_enabled
+            || state.show_antigravity_external != external_enabled;
+        state.show_antigravity_gemini = gemini_enabled;
+        state.show_antigravity_external = external_enabled;
+        state.accounts = settings.accounts.clone();
+        if let Some(data) = state.data.as_mut() {
+            data.select_accounts(&settings.accounts);
+        }
         state.poll_interval_ms = settings.poll_interval_ms;
         state.providers = settings.enabled_providers();
-        state.taskbar_index = settings.taskbar_index;
+        state.usage_countdown = settings.usage_countdown;
+        dual_mode = state.show_antigravity_gemini
+            && state.show_antigravity_external
+            && state.providers.contains(ProviderId::Antigravity);
+        if !dual_mode {
+            unsafe {
+                let _ = kill_controller_timer(Some(hwnd), TIMER_CROSSFADE_SCHEDULE);
+            }
+            state.crossfade_opacity = 1.0;
+        }
+        update_configured_placement(
+            state,
+            settings.placement_override,
+            settings.taskbar_index,
+            settings.tray_offset,
+        );
+        state.floating_card_opacity = settings.floating_card_opacity;
+        state.lock_taskbar = settings.lock_taskbar;
+        lock_enabled = state.lock_taskbar;
         apply_language_to_state(state, language_override);
     }
+    if dual_mode && (antigravity_changed || providers_changed) {
+        arm_crossfade_schedule(hwnd);
+    }
     unsafe {
-        SetTimer(Some(hwnd), TIMER_POLL, settings.poll_interval_ms, None);
+        set_controller_timer(Some(hwnd), TIMER_POLL, settings.poll_interval_ms, None);
     }
     let _ = apply_custom_theme(hwnd, settings.custom_theme_enabled, theme_path, None);
+    if lock_enabled {
+        // apply_custom_theme leaves the window as a popup; re-embed a
+        // previously ejected widget so the lock takes effect at once.
+        redock_locked_widget(hwnd);
+    }
     if providers_changed {
         request_poll(hwnd);
     }
     sync_tray_icon(hwnd);
+    position_at_taskbar();
+    render_layered();
+}
+
+/// Use the configured host, not the transient popup created by a drag or
+/// auto-ejection. An intentional floating placement takes precedence over the
+/// theme's authored host.
+fn taskbar_lock_applies(state: &AppState) -> bool {
+    if !state.lock_taskbar {
+        return false;
+    }
+    match state.placement_override.as_ref().map(|p| p.nest.as_str()) {
+        Some("taskbar") => true,
+        Some("floating") => false,
+        _ => state.active_theme.as_ref().is_some_and(|theme| {
+            theme.surfaces.first().is_some_and(|surface| {
+                surface
+                    .placement
+                    .nest
+                    .resolve(surface.placement.reference.region)
+                    == SurfaceNest::Taskbar
+            })
+        }),
+    }
+}
+
+fn clear_locked_auto_ejection(state: &mut AppState) -> bool {
+    if !taskbar_lock_applies(state) || !state.auto_ejected {
+        return false;
+    }
+    clear_auto_ejection(state);
+    true
+}
+
+/// Restore a locked taskbar widget after auto-ejection. Intentional floating,
+/// desktop and tray hosts retain their placement.
+fn redock_locked_widget(hwnd: HWND) {
+    let taskbar_hwnd = {
+        let mut state = lock_state();
+        let Some(state) = state.as_mut() else {
+            return;
+        };
+        // Locking suppresses collisions with app buttons, but must not restore
+        // a mostly hidden layout into the parent. Use the same rule as ejection.
+        if let Some(taskbar) = state.taskbar_hwnd.map(SendHwnd::to_hwnd) {
+            let Some(bounds) = native_interop::get_taskbar_rect(taskbar) else {
+                return;
+            };
+            let Some(target) = restored_dock_rect(state, taskbar, bounds) else {
+                return;
+            };
+            if !taskbar_collision::taskbar_shown(bounds)
+                || positioning::taskbar_ejection_required(bounds, target, false, true)
+            {
+                return;
+            }
+        }
+        if !clear_locked_auto_ejection(state) {
+            return;
+        }
+        state.is_switching_window_style = true;
+        state.taskbar_hwnd.map(|h| h.to_hwnd())
+    };
+    // Re-embed first so position_at_taskbar sees a docked window.
+    if let Some(taskbar) = taskbar_hwnd {
+        native_interop::embed_as_child(hwnd, taskbar);
+        diagnose::log("taskbar lock enabled: re-docked floating widget");
+    }
+    if let Some(state) = lock_state().as_mut() {
+        state.is_switching_window_style = false;
+    }
     position_at_taskbar();
     render_layered();
 }
@@ -2411,17 +3570,351 @@ fn tray_reposition_is_suppressed() -> bool {
     }
 }
 
+mod lifecycle;
+use lifecycle::{controller_for, kill_controller_timer, set_controller_timer, WM_APP_RECONCILE};
+mod host_geometry;
 mod message_loop;
+use host_geometry::*;
 use message_loop::wnd_proc;
 mod positioning;
+mod taskbar_collision;
 use positioning::*;
 mod mouse;
+mod widget_tooltip;
 use mouse::*;
 mod window_context_menu;
 use window_context_menu::*;
 
 #[cfg(test)]
 mod placement_tests;
+
+#[cfg(test)]
+mod layered_window_tests;
+
+#[cfg(test)]
+mod partial_poll_retry_tests {
+    use super::*;
+    use crate::accounts::{AccountProfile, AccountSettings};
+    use crate::models::{AccountUsage, UsageData};
+
+    fn partial_data() -> AppUsageData {
+        let mut data = AppUsageData::from_iter([(ProviderId::Codex, UsageData::default())]);
+        data.accounts.push(AccountUsage {
+            provider: ProviderId::Claude,
+            profile: AccountProfile::default(),
+            source_signature: String::new(),
+            source_path: None,
+            usage: None,
+            error: Some(poller::PollError::HttpStatus(429)),
+            selected: false,
+        });
+        data
+    }
+
+    #[test]
+    fn overall_success_with_failed_account_retries_with_backoff_and_cooldown() {
+        let data = partial_data();
+        assert!(
+            !data.is_empty(),
+            "another provider made the poll successful"
+        );
+        let enabled = ProviderSet::from_enabled([ProviderId::Claude, ProviderId::Codex]);
+        let accounts = AccountSettings::default();
+        for (count, interval, cooldown, expected) in [
+            (0, 900_000, 0, 30_000),
+            (1, 900_000, 0, 60_000),
+            (2, 900_000, 0, 120_000),
+            (10, 900_000, 0, 900_000),
+            (u32::MAX, 900_000, 0, 900_000),
+            (0, 900_000, 120_000, 120_000),
+            (0, 60_000, 120_000, 120_000),
+        ] {
+            assert_eq!(
+                partial_poll_retry_delay_ms(&data, enabled, &accounts, count, interval, cooldown),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn only_transient_account_failures_trigger_partial_retries() {
+        use poller::PollError;
+
+        let mut data = partial_data();
+        let enabled = ProviderSet::from_enabled([ProviderId::Claude, ProviderId::Codex]);
+        let accounts = AccountSettings::default();
+        for (error, expected) in [
+            (PollError::NoCredentials, None),
+            (PollError::AuthRequired, None),
+            (PollError::TokenExpired, None),
+            (PollError::RequestFailed, None),
+            (PollError::UnexpectedResponse, None),
+            (PollError::HttpStatus(400), None),
+            (PollError::HttpStatus(401), None),
+            (PollError::HttpStatus(403), None),
+            (PollError::HttpStatus(404), None),
+            (PollError::HttpStatus(408), None),
+            (PollError::HttpStatus(499), None),
+            (PollError::HttpStatus(600), None),
+            (PollError::HttpStatus(429), Some(30_000)),
+            (PollError::HttpStatus(500), Some(30_000)),
+            (PollError::HttpStatus(503), Some(30_000)),
+            (PollError::HttpStatus(599), Some(30_000)),
+            (PollError::NetworkError, Some(30_000)),
+        ] {
+            data.accounts[0].error = Some(error);
+            assert_eq!(
+                partial_poll_retry_delay_ms(&data, enabled, &accounts, 0, 900_000, 0),
+                expected,
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn permanent_account_failure_does_not_keep_reset_polling_in_backoff() {
+        let mut data = partial_data();
+        data.accounts[0].error = Some(poller::PollError::NoCredentials);
+        let mut healthy = UsageData::default();
+        healthy.session.available = true;
+        healthy.session.resets_at = Some(std::time::UNIX_EPOCH);
+        data.insert(ProviderId::Codex, healthy);
+        let enabled = ProviderSet::from_enabled([ProviderId::Claude, ProviderId::Codex]);
+
+        // None takes the success path that clears retry_count, allowing the
+        // countdown timer to schedule the five-second reset poll again.
+        assert_eq!(
+            partial_poll_retry_delay_ms(&data, enabled, &AccountSettings::default(), 3, 900_000, 0),
+            None
+        );
+        assert!(poller::app_is_past_reset(&data));
+    }
+
+    #[test]
+    fn stale_failed_accounts_retry_and_healthy_accounts_restore_normal_polling() {
+        let mut data = partial_data();
+        let enabled = ProviderSet::from_enabled([ProviderId::Claude, ProviderId::Codex]);
+        let accounts = AccountSettings::default();
+        data.accounts[0].usage = Some(UsageData {
+            stale: true,
+            ..Default::default()
+        });
+        assert_eq!(
+            partial_poll_retry_delay_ms(&data, enabled, &accounts, 1, 900_000, 0),
+            Some(60_000)
+        );
+        data.accounts[0].usage.as_mut().unwrap().stale = false;
+        data.accounts[0].error = None;
+        assert_eq!(
+            partial_poll_retry_delay_ms(&data, enabled, &accounts, 1, 900_000, 120_000),
+            None
+        );
+    }
+
+    #[test]
+    fn disabled_accounts_and_providers_do_not_trigger_retries() {
+        let mut data = partial_data();
+        let accounts = AccountSettings::default();
+        assert_eq!(
+            partial_poll_retry_delay_ms(
+                &data,
+                ProviderSet::from_enabled([ProviderId::Codex]),
+                &accounts,
+                0,
+                900_000,
+                0,
+            ),
+            None
+        );
+        data.accounts[0].profile.enabled = false;
+        assert_eq!(
+            partial_poll_retry_delay_ms(
+                &data,
+                ProviderSet::from_enabled([ProviderId::Claude, ProviderId::Codex]),
+                &accounts,
+                0,
+                900_000,
+                0,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn missing_or_stale_provider_without_error_does_not_retry() {
+        let mut data = AppUsageData::from_iter([(ProviderId::Codex, UsageData::default())]);
+        let enabled = ProviderSet::from_enabled([ProviderId::Codex, ProviderId::Cursor]);
+        let accounts = AccountSettings::default();
+        assert_eq!(
+            partial_poll_retry_delay_ms(&data, enabled, &accounts, 0, 900_000, 0),
+            None
+        );
+        data.insert(
+            ProviderId::Cursor,
+            UsageData {
+                stale: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            partial_poll_retry_delay_ms(&data, enabled, &accounts, 1, 900_000, 120_000),
+            None
+        );
+    }
+}
+
+#[cfg(test)]
+mod ui_hang_watchdog_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+
+    #[test]
+    fn recovery_requires_both_the_delay_and_consecutive_probes() {
+        let start = Instant::now();
+        let mut silence = UiSilence::new(start, 0);
+        for seconds in 0..10 {
+            let now = start + Duration::from_secs(seconds * 2);
+            silence.record_probe(now);
+            assert!(!silence.recovery_due(now));
+        }
+        for seconds in 10..=15 {
+            let now = start + Duration::from_secs(seconds * 2);
+            silence.record_probe(now);
+        }
+        assert!(silence.recovery_due(start + Duration::from_secs(30)));
+
+        let mut sparse = UiSilence::new(start, 0);
+        for seconds in [0, 9, 18, 27, 36] {
+            let now = start + Duration::from_secs(seconds);
+            sparse.record_probe(now);
+            assert!(!sparse.recovery_due(now));
+        }
+    }
+
+    #[test]
+    fn sleep_breaks_silence_even_after_many_failed_probes() {
+        let start = Instant::now();
+        let mut silence = UiSilence::new(start, 0);
+        for probe in 0..UI_HANG_MIN_SILENT_PROBES {
+            silence.record_probe(start + Duration::from_secs(u64::from(probe) * 2));
+        }
+        let wake = start + Duration::from_secs(600);
+        silence.record_probe(wake);
+        assert_eq!(silence.silent_probes, 1);
+        assert!(!silence.recovery_due(wake));
+        for probe in 1..=15 {
+            silence.record_probe(wake + Duration::from_secs(probe * 2));
+        }
+        assert!(silence.recovery_due(wake + Duration::from_secs(30)));
+    }
+
+    struct WindowThread {
+        hwnd: SendHwnd,
+        thread_id: u32,
+        release: mpsc::Sender<()>,
+        handle: std::thread::JoinHandle<()>,
+    }
+
+    /// Own a message-only window on a thread of its own. A pumping thread runs
+    /// a message loop until WM_QUIT; a wedged one blocks without ever pumping
+    /// until released, which is how a stuck UI thread looks from outside.
+    fn spawn_window_thread(pumping: bool) -> WindowThread {
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel::<()>();
+        let handle = std::thread::spawn(move || unsafe {
+            let class = native_interop::wide_str("STATIC");
+            let hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                PCWSTR::from_raw(class.as_ptr()),
+                PCWSTR::null(),
+                WINDOW_STYLE::default(),
+                0,
+                0,
+                0,
+                0,
+                Some(HWND_MESSAGE),
+                None,
+                None,
+                None,
+            )
+            .expect("create isolated message-only test window");
+            let ready = (SendHwnd::from_hwnd(hwnd), GetCurrentThreadId());
+            if pumping {
+                // Report ready from inside the loop, so a probe can never land
+                // between the handshake and the first GetMessageW.
+                PostThreadMessageW(ready.1, WM_APP, WPARAM(0), LPARAM(0))
+                    .expect("queue the readiness marker");
+                let mut msg = MSG::default();
+                while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                    if msg.message == WM_APP {
+                        ready_tx.send(ready).expect("hand the test window back");
+                    }
+                    DispatchMessageW(&msg);
+                }
+            } else {
+                ready_tx.send(ready).expect("hand the test window back");
+                let _ = release_rx.recv();
+            }
+            let _ = DestroyWindow(hwnd);
+        });
+        let (hwnd, thread_id) = ready_rx.recv().expect("test window created");
+        WindowThread {
+            hwnd,
+            thread_id,
+            release,
+            handle,
+        }
+    }
+
+    #[test]
+    fn hang_probe_tells_a_pumping_ui_thread_from_a_wedged_one() {
+        let pumping = spawn_window_thread(true);
+        let wedged = spawn_window_thread(false);
+
+        assert!(ui_thread_responds(pumping.hwnd.to_hwnd()));
+        assert!(!ui_thread_responds(wedged.hwnd.to_hwnd()));
+
+        wedged.release.send(()).expect("release the wedged thread");
+        wedged.handle.join().expect("wedged thread exits");
+        unsafe {
+            PostThreadMessageW(pumping.thread_id, WM_QUIT, WPARAM(0), LPARAM(0))
+                .expect("stop the pumping thread");
+        }
+        pumping.handle.join().expect("pumping thread exits");
+    }
+
+    #[test]
+    fn hang_probe_leaves_a_destroyed_window_to_the_surface_watchdog() {
+        let gone = spawn_window_thread(false);
+        let hwnd = gone.hwnd;
+        gone.release.send(()).expect("release the window thread");
+        gone.handle.join().expect("window thread exits");
+
+        assert!(ui_thread_responds(hwnd.to_hwnd()));
+    }
+
+    #[test]
+    fn back_to_back_hang_relaunches_double_the_tolerated_silence() {
+        assert_eq!(hang_recovery_delay(0), Duration::from_secs(30));
+        assert_eq!(hang_recovery_delay(1), Duration::from_secs(60));
+        assert_eq!(hang_recovery_delay(4), Duration::from_secs(480));
+        assert_eq!(hang_recovery_delay(9), Duration::from_secs(480));
+    }
+
+    #[test]
+    fn a_hang_streak_only_carries_over_while_the_replacement_is_fresh() {
+        let now = 1_000_000;
+        let fresh = (now - 60).to_string();
+        let stale = (now - 600).to_string();
+
+        assert_eq!(hang_relaunch_streak(Some("2"), Some(&fresh), now), 2);
+        assert_eq!(hang_relaunch_streak(Some("2"), Some(&stale), now), 0);
+        assert_eq!(hang_relaunch_streak(None, Some(&fresh), now), 0);
+        assert_eq!(hang_relaunch_streak(Some("2"), None, now), 0);
+        assert_eq!(hang_relaunch_streak(Some("garbage"), Some(&fresh), now), 0);
+    }
+}
 
 #[cfg(test)]
 mod language_menu_tests {
@@ -2447,16 +3940,76 @@ mod tray_usage_summary_tests {
     fn usage(session: f64, weekly: f64, weekly_label: Option<&str>) -> UsageData {
         UsageData {
             session: UsageSection {
+                available: true,
                 percentage: session,
                 resets_at: None,
             },
             weekly: UsageSection {
+                available: true,
                 percentage: weekly,
                 resets_at: None,
             },
             weekly_label: weekly_label.map(str::to_string),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn tray_errors_distinguish_causes_and_disappear_after_recovery() {
+        use crate::poller::{PollError, PollFailure};
+        let providers = ProviderSet::from_enabled([ProviderId::Claude]);
+        for (error, expected) in [
+            (PollError::TokenExpired, "Login expired"),
+            (PollError::NoCredentials, "No usable login"),
+            (PollError::AuthRequired, "Login rejected"),
+            (PollError::RequestFailed, "Usage request failed"),
+            (PollError::NetworkError, "Service unreachable"),
+            (PollError::UnexpectedResponse, "Unexpected usage response"),
+            (PollError::HttpStatus(429), "HTTP 429"),
+        ] {
+            let failure = PollFailure {
+                provider: ProviderId::Claude,
+                error,
+            };
+            let lines = tray_error_lines(None, Some(failure), providers, LanguageId::English);
+            assert_eq!(lines.len(), 1);
+            assert!(lines[0].contains(expected), "{:?}", lines);
+            assert!(tray_error_lines(
+                None,
+                Some(failure),
+                ProviderSet::from_enabled([ProviderId::Codex]),
+                LanguageId::English
+            )
+            .is_empty());
+        }
+        assert!(tray_error_lines(None, None, providers, LanguageId::English).is_empty());
+        let mut data = AppUsageData::default();
+        for (name, selected) in [("Work", false), ("Personal", true)] {
+            data.accounts.push(crate::models::AccountUsage {
+                provider: ProviderId::Claude,
+                profile: crate::accounts::AccountProfile {
+                    name: name.into(),
+                    enabled: true,
+                    ..Default::default()
+                },
+                source_signature: String::new(),
+                source_path: None,
+                usage: None,
+                error: Some(PollError::TokenExpired),
+                selected,
+            });
+        }
+        let lines = tray_error_lines(Some(&data), None, providers, LanguageId::English);
+        assert!(lines[0].starts_with("Claude Code (Personal): Login expired"));
+        assert!(lines[1].contains("Work"));
+        for account in &mut data.accounts {
+            account.error = None;
+        }
+        assert!(tray_error_lines(Some(&data), None, providers, LanguageId::English).is_empty());
+        let instruction = LanguageId::English
+            .provider_auth_error(ProviderId::Claude)
+            .1;
+        assert!(instruction.contains("desktop app") && instruction.contains("/login"));
     }
 
     #[test]
@@ -2470,8 +4023,107 @@ mod tray_usage_summary_tests {
                 &data,
                 ProviderSet::from_enabled([ProviderId::Claude]),
                 LanguageId::English,
+                false,
             ),
             ["Claude Code 5h: 5% | 7d: 42%"]
+        );
+    }
+
+    #[test]
+    fn widget_summary_adds_precision_and_reset_times_without_changing_tray_text() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let mut reading = usage(4.64, 42.37, Some("30d"));
+        reading.session.resets_at = Some(now + Duration::from_secs(11_520));
+        reading.weekly.resets_at = Some(now + Duration::from_secs(183_600));
+        let data = [(ProviderId::Claude, reading)].into_iter().collect();
+        let providers = ProviderSet::from_enabled([ProviderId::Claude]);
+        assert_eq!(
+            usage_summary_lines(
+                &data,
+                providers,
+                LanguageId::English,
+                false,
+                true,
+                true,
+                Some(now)
+            ),
+            ["Claude Code 5h: 4.6% (3h 12m) | 30d: 42.4% (2d 3h)"]
+        );
+        assert_eq!(
+            usage_summary_lines(
+                &data,
+                providers,
+                LanguageId::English,
+                true,
+                true,
+                true,
+                Some(now)
+            ),
+            ["Claude Code 5h: 95.4% (3h 12m) | 30d: 57.6% (2d 3h)"]
+        );
+        assert_eq!(
+            tray_usage_summary_lines(&data, providers, LanguageId::English, false),
+            ["Claude Code 5h: 5% | 30d: 42%"]
+        );
+    }
+
+    #[test]
+    fn widget_summary_preserves_pool_selection_and_missing_windows() {
+        let now = UNIX_EPOCH;
+        let mut reading = usage(12.34, 56.78, None);
+        reading.weekly = UsageSection::default();
+        let data = [(ProviderId::Antigravity, reading)].into_iter().collect();
+        let providers = ProviderSet::from_enabled([ProviderId::Antigravity]);
+        let lines = usage_summary_lines(
+            &data,
+            providers,
+            LanguageId::English,
+            false,
+            true,
+            true,
+            Some(now),
+        );
+        assert!(
+            lines[0].ends_with("(Gemini) 5h: 12.3% | 7d: --"),
+            "{lines:?}"
+        );
+        assert!(lines[1].ends_with("(Claude/GPT): --"), "{lines:?}");
+        assert!(usage_summary_lines(
+            &data,
+            providers,
+            LanguageId::English,
+            false,
+            false,
+            false,
+            Some(now)
+        )
+        .is_empty());
+        assert!(usage_summary_lines(
+            &data,
+            ProviderSet::from_enabled([ProviderId::Claude]),
+            LanguageId::English,
+            false,
+            true,
+            true,
+            Some(now)
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn tray_summary_counts_down_when_the_widget_shows_what_is_left() {
+        let data = [(ProviderId::Claude, usage(4.6, 42.4, None))]
+            .into_iter()
+            .collect();
+
+        assert_eq!(
+            tray_usage_summary_lines(
+                &data,
+                ProviderSet::from_enabled([ProviderId::Claude]),
+                LanguageId::English,
+                true,
+            ),
+            ["Claude Code 5h: 95% | 7d: 58%"]
         );
     }
 
@@ -2489,8 +4141,39 @@ mod tray_usage_summary_tests {
                 &data,
                 ProviderSet::from_enabled([ProviderId::OpenCode]),
                 LanguageId::English,
+                false,
             ),
             ["OpenCode 5h: 30% | 30d: 40%"]
+        );
+    }
+
+    #[test]
+    fn tray_summary_prefers_the_reported_session_window_label() {
+        // Cursor's included-usage window is not the default five-hour session.
+        let mut data = usage(7.1, 0.0, Some("API"));
+        data.session_label = Some("7d".into());
+        let data = [(ProviderId::Cursor, data)].into_iter().collect();
+
+        assert_eq!(
+            tray_usage_summary_lines(
+                &data,
+                ProviderSet::from_enabled([ProviderId::Cursor]),
+                LanguageId::English,
+                false,
+            ),
+            ["Cursor 7d: 7% | API: 0%"]
+        );
+        assert_eq!(
+            usage_summary_lines(
+                &data,
+                ProviderSet::from_enabled([ProviderId::Cursor]),
+                LanguageId::English,
+                false,
+                true,
+                true,
+                Some(UNIX_EPOCH),
+            ),
+            ["Cursor 7d: 7.1% | API: 0.0%"]
         );
     }
 }
@@ -2523,6 +4206,7 @@ mod poll_display_state_tests {
         let stale = cached_usage(true);
 
         assert_eq!(poll_display_state(false, 1, false, None), (false, true));
+        assert_eq!(poll_display_state(true, 1, false, None), (true, false));
         assert_eq!(
             poll_display_state(false, 1, false, Some(&fresh)),
             (false, true)
@@ -2531,5 +4215,72 @@ mod poll_display_state_tests {
             poll_display_state(false, 1, true, Some(&stale)),
             (false, true)
         );
+    }
+}
+
+#[cfg(test)]
+mod placement_regression_tests;
+
+#[cfg(test)]
+mod credential_watch_worker_tests {
+    use super::*;
+
+    #[test]
+    fn a_manual_refresh_queued_during_a_slow_watch_is_not_lost() {
+        let in_flight = AtomicBool::new(true);
+        let pending = AtomicBool::new(false);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let in_flight = &in_flight;
+            let pending = &pending;
+            let worker = scope.spawn(move || {
+                let mut calls = Vec::new();
+                run_poll_worker(in_flight, pending, true, |scheduled| {
+                    calls.push(scheduled);
+                    if scheduled {
+                        started_tx.send(()).unwrap();
+                        resume_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    }
+                });
+                calls
+            });
+            started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            // A second timer tick cannot acquire the worker while discovery is
+            // blocked, but an explicit refresh can queue for that worker.
+            assert!(in_flight
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err());
+            pending.store(true, Ordering::Release);
+            resume_tx.send(()).unwrap();
+            assert_eq!(worker.join().unwrap(), [true, false]);
+        });
+        assert!(!in_flight.load(Ordering::Acquire));
+        assert!(!pending.load(Ordering::Acquire));
+    }
+}
+
+#[cfg(test)]
+mod antigravity_crossfade_tests {
+    use super::antigravity_crossfade_frame;
+
+    #[test]
+    fn pool_crossfade_follows_the_same_phase_after_startup_sleep_and_rearming() {
+        for cycle in [0, 20_000, 180_000] {
+            for (phase, opacity, delay) in [
+                (0, 1.0, 8_000),
+                (7_000, 1.0, 1_000),
+                (8_000, 1.0, 30),
+                (9_000, 0.5, 30),
+                (10_000, 0.0, 8_000),
+                (17_000, 0.0, 1_000),
+                (18_000, 0.0, 30),
+                (19_000, 0.5, 30),
+            ] {
+                assert_eq!(antigravity_crossfade_frame(cycle + phase), (opacity, delay));
+            }
+        }
+        let before_wrap = antigravity_crossfade_frame(19_999).0;
+        assert!((1.0 - before_wrap).abs() < 0.000_001);
     }
 }

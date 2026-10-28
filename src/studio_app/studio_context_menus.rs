@@ -110,8 +110,7 @@ impl StudioApp {
                     self.context_menu_path = Some(path);
                     self.context_menu_dirty = false;
                     self.context_menu_selection = None;
-                    self.context_menu_action_helper = None;
-                    self.text_template_helper = None;
+                    self.close_helper(true);
                 }
                 Err(error) => self.theme_error = Some(error),
             }
@@ -121,8 +120,7 @@ impl StudioApp {
             self.context_menu_path = None;
             self.context_menu_dirty = true;
             self.context_menu_selection = Some(vec![0]);
-            self.context_menu_action_helper = None;
-            self.text_template_helper = None;
+            self.close_helper(true);
         }
         if duplicate {
             let name = format!("{} ({})", self.context_menu.name, language.text("copy"));
@@ -139,8 +137,7 @@ impl StudioApp {
                 .unwrap_or_else(context_menu::classic_context_menu);
             self.context_menu_dirty = false;
             self.context_menu_selection = None;
-            self.context_menu_action_helper = None;
-            self.text_template_helper = None;
+            self.close_helper(true);
         }
         if delete {
             if let Some(path) = self.context_menu_path.clone() {
@@ -153,10 +150,12 @@ impl StudioApp {
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(8.0);
-        if self.text_template_helper.is_some() {
-            self.text_template_helper_ui(ui);
-        } else if self.context_menu_action_helper.is_some() {
-            self.context_menu_action_helper_ui(ui);
+        if self
+            .helper
+            .as_ref()
+            .is_some_and(|helper| helper.target.is_context_menu())
+        {
+            self.helper_ui(ui);
         } else {
             let editor_identity = self.context_menu.id.clone();
             let read_only = self.context_menu.is_builtin();
@@ -647,8 +646,7 @@ impl StudioApp {
                     self.context_menu_path = context_menu::ensure_builtin_context_menus().ok();
                     self.context_menu_dirty = false;
                     self.context_menu_selection = None;
-                    self.context_menu_action_helper = None;
-                    self.text_template_helper = None;
+                    self.close_helper(true);
                 }
                 Err(error) => self.theme_error = Some(error),
             },
@@ -675,6 +673,7 @@ impl StudioApp {
         let mut changed = false;
         let mut open_label_helper = false;
         let mut open_action_helper = false;
+        let mut open_expression_helper = false;
         let label_context = DataContext::from_usage_with_runtime(
             self.usage.as_ref(),
             &Canvas::default(),
@@ -698,6 +697,17 @@ impl StudioApp {
             ui.make_persistent_id(("context-menu-item-section", &path)),
             language.text("Item"),
             |ui| {
+                ui.add_enabled_ui(!read_only, |ui| {
+                    open_expression_helper = expression_control(
+                        ui,
+                        ui.make_persistent_id(("context-menu-render", &path)),
+                        language.text("Render"),
+                        &mut item.render,
+                        ExpressionControlKind::Boolean,
+                        &label_context,
+                        language,
+                    );
+                });
                 if !matches!(&item.kind, ContextMenuItemKind::Separator) {
                     labeled(ui, language.text("Label"), |ui| {
                         ui.add_enabled_ui(!read_only, |ui| {
@@ -707,6 +717,7 @@ impl StudioApp {
                                 &mut item.label,
                                 &label_context,
                                 inspector_control_width(ui),
+                                language,
                             );
                         });
                     });
@@ -731,7 +742,7 @@ impl StudioApp {
                                 &preview,
                                 inspector_control_width(ui),
                                 true,
-                                language.text("action helper"),
+                                language,
                                 egui::Align::Min,
                             );
                             open_action_helper = helper_action.open;
@@ -747,10 +758,18 @@ impl StudioApp {
                 *target = item;
             }
         }
+        if open_expression_helper {
+            if let Some(item) = context_menu_item(&self.context_menu.items, &path) {
+                self.helper = Some(HelperSession::context_menu_expression(
+                    path.clone(),
+                    item.render.0.clone(),
+                ));
+            }
+        }
         if open_label_helper {
             if let Some(item) = context_menu_item(&self.context_menu.items, &path) {
-                self.text_template_helper = Some(TextTemplateHelperState::for_context_menu(
-                    path.clone(),
+                self.helper = Some(HelperSession::text(
+                    TextTemplateHelperTarget::ContextMenu(path.clone()),
                     item.label.clone(),
                 ));
             }
@@ -761,8 +780,7 @@ impl StudioApp {
                 ..
             }) = context_menu_item(&self.context_menu.items, &path)
             {
-                self.context_menu_action_helper =
-                    Some(ContextMenuActionHelperState::new(path.clone(), action));
+                self.helper = Some(HelperSession::menu_action(path.clone(), action));
             }
         }
         changed

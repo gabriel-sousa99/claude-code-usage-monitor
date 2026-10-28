@@ -20,9 +20,13 @@ pub const POLL_1_MIN: u32 = POLL_1_MIN_SECONDS * 1_000;
 pub const POLL_5_MIN: u32 = POLL_5_MIN_SECONDS * 1_000;
 pub const POLL_15_MIN: u32 = POLL_15_MIN_SECONDS * 1_000;
 pub const POLL_1_HOUR: u32 = POLL_1_HOUR_SECONDS * 1_000;
+// SetTimer clamps longer intervals to USER_TIMER_MAXIMUM (i32::MAX ms).
+pub const MAX_POLL_MINUTES: u32 = i32::MAX as u32 / POLL_1_MIN;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SettingsFile {
+    #[serde(default)]
+    pub accounts: crate::accounts::AccountSettings,
     #[serde(default, skip_serializing)]
     pub tray_offset: i32,
     #[serde(default, skip_serializing)]
@@ -50,23 +54,72 @@ pub struct SettingsFile {
     show_codex: bool,
     #[serde(default)]
     show_antigravity: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_antigravity_gemini: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_antigravity_external: Option<bool>,
     #[serde(default)]
     show_opencode: bool,
     #[serde(default)]
     show_cursor: bool,
+    #[serde(default)]
+    show_grok: bool,
+    #[serde(default)]
+    show_copilot: bool,
     #[serde(default = "default_true")]
     pub custom_theme_enabled: bool,
+    /// Show what is left of each allowance instead of what has been spent, so
+    /// the widget counts down towards a limit rather than up from zero.
+    #[serde(default)]
+    pub usage_countdown: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_theme_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dashboard_width: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dashboard_height: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub floating_card_opacity: Option<u8>,
+    /// Prevent auto-ejection and outside drops for widgets configured with a
+    /// taskbar host. Intentional floating, desktop and tray hosts are unaffected.
+    #[serde(default)]
+    pub lock_taskbar: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement_override: Option<PlacementOverride>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacementOverride {
+    pub nest: String,
+    #[serde(default)]
+    pub monitor_index: usize,
+    /// GDI device name (e.g. `\\.\DISPLAY2`) of the saved monitor. Enumeration
+    /// order can change between boots, so this wins over `monitor_index`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor_device: Option<String>,
+    #[serde(default)]
+    pub screen_x: i32,
+    #[serde(default)]
+    pub screen_y: i32,
+    #[serde(default)]
+    pub tray_offset: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub floating_host: Option<FloatingHost>,
+}
+
+/// The unpadded, logical host size retained when a taskbar root is undocked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FloatingHost {
+    pub theme_id: String,
+    pub surface_id: String,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl Default for SettingsFile {
     fn default() -> Self {
         Self {
+            accounts: Default::default(),
             tray_offset: 0,
             taskbar_index: 0,
             legacy_placement_pending: false,
@@ -78,12 +131,20 @@ impl Default for SettingsFile {
             show_claude_code: true,
             show_codex: false,
             show_antigravity: false,
+            show_antigravity_gemini: None,
+            show_antigravity_external: None,
             show_opencode: false,
             show_cursor: false,
+            show_grok: false,
+            show_copilot: false,
             custom_theme_enabled: true,
+            usage_countdown: false,
             active_theme_path: None,
             dashboard_width: None,
             dashboard_height: None,
+            floating_card_opacity: None,
+            lock_taskbar: false,
+            placement_override: None,
         }
     }
 }
@@ -96,14 +157,26 @@ pub struct LegacyPlacement {
 
 impl SettingsFile {
     pub fn normalize(&mut self) {
-        if !matches!(
-            self.poll_interval_ms,
-            POLL_1_MIN | POLL_5_MIN | POLL_15_MIN | POLL_1_HOUR
-        ) {
+        self.accounts.claude.normalize();
+        self.accounts.codex.normalize();
+        if !(POLL_1_MIN..=MAX_POLL_MINUTES * POLL_1_MIN).contains(&self.poll_interval_ms)
+            || !self.poll_interval_ms.is_multiple_of(POLL_1_MIN)
+        {
             self.poll_interval_ms = default_poll_interval();
         }
+        if self.show_antigravity_gemini.is_none() {
+            self.show_antigravity_gemini = Some(self.show_antigravity);
+        }
+        if self.show_antigravity_external.is_none() {
+            self.show_antigravity_external = Some(self.show_antigravity);
+        }
+        self.show_antigravity = self.show_antigravity_gemini.unwrap_or(false)
+            || self.show_antigravity_external.unwrap_or(false);
         if self.enabled_providers().is_empty() {
             self.set_enabled_providers(ProviderSet::default());
+        }
+        if let Some(opacity) = self.floating_card_opacity {
+            self.floating_card_opacity = Some(opacity.min(100));
         }
         // The widget and Theme Studio are now one system. Keep accepting this
         // legacy setting so older settings files migrate cleanly.
@@ -151,19 +224,65 @@ impl SettingsFile {
         match provider {
             ProviderId::Claude => self.show_claude_code,
             ProviderId::Codex => self.show_codex,
-            ProviderId::Antigravity => self.show_antigravity,
+            ProviderId::Antigravity => {
+                self.show_antigravity_gemini
+                    .unwrap_or(self.show_antigravity)
+                    || self
+                        .show_antigravity_external
+                        .unwrap_or(self.show_antigravity)
+            }
             ProviderId::OpenCode => self.show_opencode,
             ProviderId::Cursor => self.show_cursor,
+            ProviderId::Grok => self.show_grok,
+            ProviderId::Copilot => self.show_copilot,
         }
+    }
+
+    pub fn antigravity_gemini_enabled(&self) -> bool {
+        self.show_antigravity_gemini
+            .unwrap_or(self.show_antigravity)
+    }
+
+    pub fn antigravity_external_enabled(&self) -> bool {
+        self.show_antigravity_external
+            .unwrap_or(self.show_antigravity)
+    }
+
+    #[allow(dead_code)]
+    pub fn set_antigravity_gemini_enabled(&mut self, enabled: bool) {
+        let external = self.antigravity_external_enabled();
+        self.show_antigravity_gemini = Some(enabled);
+        self.show_antigravity_external = Some(external);
+        self.show_antigravity = enabled || external;
+    }
+
+    #[allow(dead_code)]
+    pub fn set_antigravity_external_enabled(&mut self, enabled: bool) {
+        let gemini = self.antigravity_gemini_enabled();
+        self.show_antigravity_external = Some(enabled);
+        self.show_antigravity_gemini = Some(gemini);
+        self.show_antigravity = gemini || enabled;
     }
 
     pub fn set_provider_enabled(&mut self, provider: ProviderId, enabled: bool) {
         match provider {
             ProviderId::Claude => self.show_claude_code = enabled,
             ProviderId::Codex => self.show_codex = enabled,
-            ProviderId::Antigravity => self.show_antigravity = enabled,
+            ProviderId::Antigravity => {
+                // Re-saving an already enabled Antigravity keeps the user's
+                // per-pool choice; only an off/on transition resets both pools.
+                let was_enabled =
+                    self.antigravity_gemini_enabled() || self.antigravity_external_enabled();
+                if enabled != was_enabled {
+                    self.show_antigravity_gemini = Some(enabled);
+                    self.show_antigravity_external = Some(enabled);
+                }
+                self.show_antigravity = enabled;
+            }
             ProviderId::OpenCode => self.show_opencode = enabled,
             ProviderId::Cursor => self.show_cursor = enabled,
+            ProviderId::Grok => self.show_grok = enabled,
+            ProviderId::Copilot => self.show_copilot = enabled,
         }
     }
 
@@ -190,11 +309,57 @@ pub struct UsageCache {
     pub data: AppUsageData,
 }
 
+#[cfg(not(test))]
 pub fn app_data_directory() -> PathBuf {
     let root = std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     root.join("ClaudeCodeUsageMonitor")
+}
+
+/// Test threads get independent settings, themes, menus, and caches. Do not
+/// change APPDATA: provider discovery and parallel tests also read it.
+#[cfg(test)]
+pub fn app_data_directory() -> PathBuf {
+    thread_local! {
+        static DIRECTORY: TestAppData = TestAppData::new();
+    }
+    DIRECTORY.with(|directory| directory.0.clone())
+}
+
+#[cfg(test)]
+struct TestAppData(PathBuf);
+
+#[cfg(test)]
+impl TestAppData {
+    fn new() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        loop {
+            let path = std::env::temp_dir().join(format!(
+                "ccum-test-{}-{stamp}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("cannot create test settings directory: {error}"),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestAppData {
+    fn drop(&mut self) {
+        // Only remove the directory this thread successfully created.
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 pub fn settings_path() -> PathBuf {
@@ -262,7 +427,9 @@ pub fn save_codex_credits(state: &CodexCreditsState) -> Result<(), String> {
 }
 
 pub fn load_usage_cache() -> Option<UsageCache> {
-    read_json(&usage_cache_path())
+    let mut cache: UsageCache = read_json(&usage_cache_path())?;
+    cache.data.invalidate_changed_credentials();
+    Some(cache)
 }
 
 pub fn save_usage_cache(data: &AppUsageData, poll_ok: bool) -> Result<(), String> {
@@ -338,6 +505,113 @@ mod tests {
     use super::*;
 
     #[test]
+    fn taskbar_lock_is_opt_in_and_survives_settings_round_trip() {
+        assert!(!decode_settings("{}").unwrap().lock_taskbar);
+        for lock_taskbar in [false, true] {
+            let settings = SettingsFile {
+                lock_taskbar,
+                ..Default::default()
+            };
+            let decoded = decode_settings(&settings_json(&settings).to_string()).unwrap();
+            assert_eq!(decoded.lock_taskbar, lock_taskbar);
+        }
+    }
+
+    #[test]
+    fn application_files_stay_inside_the_test_directory() {
+        let root = app_data_directory();
+        assert!(root.starts_with(std::env::temp_dir()));
+        if let Some(real) = std::env::var_os("APPDATA") {
+            assert!(!root.starts_with(PathBuf::from(real).join("ClaudeCodeUsageMonitor")));
+        }
+        for path in [
+            settings_path(),
+            usage_cache_path(),
+            codex_credits_path(),
+            crate::theme_engine::themes_directory(),
+            crate::theme_engine::assets_directory(),
+            crate::context_menu::context_menus_directory(),
+            crate::theme_engine::ensure_starter_theme().unwrap(),
+            crate::context_menu::ensure_builtin_context_menus().unwrap(),
+        ] {
+            assert!(path.starts_with(&root), "{}", path.display());
+        }
+        save_settings(&SettingsFile::default()).unwrap();
+        assert!(settings_path().is_file());
+    }
+
+    #[test]
+    fn parallel_test_threads_have_independent_settings_and_clean_up() {
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = [7, 11]
+            .into_iter()
+            .map(|minutes| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let settings = SettingsFile {
+                        poll_interval_ms: minutes * POLL_1_MIN,
+                        ..Default::default()
+                    };
+                    save_settings(&settings).unwrap();
+                    barrier.wait();
+                    assert_eq!(load_settings().poll_interval_ms, minutes * POLL_1_MIN);
+                    app_data_directory()
+                })
+            })
+            .collect();
+        let paths: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_ne!(paths[0], paths[1]);
+        assert!(paths.iter().all(|path| !path.exists()));
+    }
+
+    #[test]
+    fn custom_poll_minutes_and_presets_survive_settings_round_trip() {
+        for minutes in [1, 2, 5, 7, 15, 60, 120, 1_440, MAX_POLL_MINUTES] {
+            let interval = minutes * POLL_1_MIN;
+            let mut decoded =
+                decode_settings(&format!(r#"{{"poll_interval_ms":{interval}}}"#)).unwrap();
+            decoded.normalize();
+            assert_eq!(decoded.poll_interval_ms, interval);
+            let mut reloaded = decode_settings(&settings_json(&decoded).to_string()).unwrap();
+            reloaded.normalize();
+            assert_eq!(reloaded.poll_interval_ms, interval);
+        }
+    }
+
+    #[test]
+    fn invalid_poll_intervals_fall_back_to_the_default() {
+        for interval in [
+            0,
+            POLL_1_MIN - 1,
+            POLL_1_MIN + 1,
+            (MAX_POLL_MINUTES + 1) * POLL_1_MIN,
+            u32::MAX,
+        ] {
+            let mut decoded =
+                decode_settings(&format!(r#"{{"poll_interval_ms":{interval}}}"#)).unwrap();
+            decoded.normalize();
+            assert_eq!(decoded.poll_interval_ms, default_poll_interval());
+        }
+    }
+
+    #[test]
+    fn named_accounts_round_trip_without_changing_legacy_provider_preferences() {
+        let old = decode_settings(r#"{"show_claude_code":true,"show_codex":true}"#).unwrap();
+        assert_eq!(old.accounts, crate::accounts::AccountSettings::default());
+        let mut settings = old;
+        settings.accounts.codex.add();
+        settings.accounts.codex.profiles[1].config_dir = "C:\\Users\\Test\\.codex-work".into();
+        settings.accounts.codex.profiles[1].enabled = true;
+        settings.accounts.codex.selected = "account_1".into();
+        let decoded = decode_settings(&settings_json(&settings).to_string()).unwrap();
+        assert_eq!(decoded.accounts, settings.accounts);
+        assert_eq!(decoded.enabled_providers(), settings.enabled_providers());
+    }
+
+    #[test]
     fn settings_never_disable_every_provider() {
         let mut settings = SettingsFile {
             show_claude_code: false,
@@ -357,6 +631,8 @@ mod tests {
             ProviderId::Antigravity,
             ProviderId::OpenCode,
             ProviderId::Cursor,
+            ProviderId::Grok,
+            ProviderId::Copilot,
         ]));
 
         let json = settings_json(&settings);
@@ -365,6 +641,8 @@ mod tests {
         assert_eq!(json["show_antigravity"], true);
         assert_eq!(json["show_opencode"], true);
         assert_eq!(json["show_cursor"], true);
+        assert_eq!(json["show_grok"], true);
+        assert_eq!(json["show_copilot"], true);
 
         let decoded = decode_settings(&json.to_string()).unwrap();
         assert_eq!(decoded.enabled_providers(), settings.enabled_providers());
@@ -375,6 +653,20 @@ mod tests {
         let mut settings = SettingsFile::default();
         assert!(!settings.toggle_provider(ProviderId::Claude));
         assert_eq!(settings.enabled_providers(), ProviderSet::default());
+    }
+
+    #[test]
+    fn usage_direction_defaults_to_counting_up_and_round_trips() {
+        let settings = SettingsFile::default();
+        assert!(!settings.usage_countdown);
+        assert_eq!(settings_json(&settings)["usage_countdown"], false);
+
+        let counting_up = decode_settings(r#"{"poll_interval_ms":900000}"#).unwrap();
+        assert!(!counting_up.usage_countdown);
+
+        let counting_down = decode_settings(r#"{"usage_countdown":true}"#).unwrap();
+        assert!(counting_down.usage_countdown);
+        assert_eq!(settings_json(&counting_down)["usage_countdown"], true);
     }
 
     #[test]
@@ -461,5 +753,59 @@ mod tests {
         invalid.normalize();
         assert_eq!(invalid.dashboard_width, None);
         assert_eq!(invalid.dashboard_height, None);
+    }
+
+    #[test]
+    fn resaving_enabled_providers_keeps_antigravity_pool_choice() {
+        let mut settings = SettingsFile::default();
+        settings.set_provider_enabled(ProviderId::Antigravity, true);
+        settings.set_antigravity_gemini_enabled(false);
+        settings.set_enabled_providers(ProviderSet::from_enabled([
+            ProviderId::Claude,
+            ProviderId::Antigravity,
+        ]));
+        assert!(!settings.antigravity_gemini_enabled());
+        assert!(settings.antigravity_external_enabled());
+
+        settings.set_provider_enabled(ProviderId::Antigravity, false);
+        assert!(!settings.antigravity_gemini_enabled());
+        assert!(!settings.antigravity_external_enabled());
+        settings.set_provider_enabled(ProviderId::Antigravity, true);
+        assert!(settings.antigravity_gemini_enabled() && settings.antigravity_external_enabled());
+    }
+    #[test]
+    fn enabling_one_antigravity_pool_does_not_enable_the_other_on_migration() {
+        for gemini in [true, false] {
+            let mut settings = SettingsFile::default();
+            if gemini {
+                settings.set_antigravity_gemini_enabled(true);
+            } else {
+                settings.set_antigravity_external_enabled(true);
+            }
+            settings.normalize();
+            assert!(settings.provider_enabled(ProviderId::Antigravity));
+            assert_eq!(settings.antigravity_gemini_enabled(), gemini);
+            assert_eq!(settings.antigravity_external_enabled(), !gemini);
+        }
+    }
+
+    #[test]
+    fn antigravity_legacy_settings_migrate_and_disabled_pools_stay_disabled() {
+        for enabled in [true, false] {
+            let mut settings: SettingsFile = serde_json::from_value(serde_json::json!({
+                "show_antigravity": enabled
+            }))
+            .unwrap();
+            settings.normalize();
+            assert_eq!(settings.antigravity_gemini_enabled(), enabled);
+            assert_eq!(settings.antigravity_external_enabled(), enabled);
+            settings.set_provider_enabled(ProviderId::Antigravity, false);
+            let mut reloaded: SettingsFile =
+                serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+            reloaded.normalize();
+            assert!(!reloaded.provider_enabled(ProviderId::Antigravity));
+            assert!(!reloaded.antigravity_gemini_enabled());
+            assert!(!reloaded.antigravity_external_enabled());
+        }
     }
 }
