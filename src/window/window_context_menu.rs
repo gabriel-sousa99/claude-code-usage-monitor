@@ -54,6 +54,51 @@ fn track_context_menu_with(
     }
 }
 
+fn taskbar_at_menu_point(
+    taskbars: &[native_interop::TaskbarWindow],
+    point: POINT,
+) -> Option<native_interop::TaskbarWindow> {
+    taskbars
+        .iter()
+        .find(|taskbar| {
+            let rect = taskbar.rect;
+            point.x >= rect.left
+                && point.x < rect.right
+                && point.y >= rect.top
+                && point.y < rect.bottom
+        })
+        .copied()
+}
+
+fn taskbar_menu_anchor(
+    mut point: POINT,
+    taskbar: RECT,
+    monitor: RECT,
+) -> (POINT, TRACK_POPUP_MENU_FLAGS) {
+    // Align to the workspace-facing edge, not to a cursor inside the taskbar.
+    // This also avoids overlap on shell composition layers above native popups.
+    let alignment = if native_interop::is_taskbar_horizontal(taskbar) {
+        if i64::from(taskbar.top) + i64::from(taskbar.bottom)
+            <= i64::from(monitor.top) + i64::from(monitor.bottom)
+        {
+            point.y = taskbar.bottom;
+            TPM_TOPALIGN | TPM_VERTICAL
+        } else {
+            point.y = taskbar.top;
+            TPM_BOTTOMALIGN | TPM_VERTICAL
+        }
+    } else if i64::from(taskbar.left) + i64::from(taskbar.right)
+        <= i64::from(monitor.left) + i64::from(monitor.right)
+    {
+        point.x = taskbar.right;
+        TPM_LEFTALIGN
+    } else {
+        point.x = taskbar.left;
+        TPM_RIGHTALIGN
+    };
+    (point, alignment)
+}
+
 pub(super) fn show_context_menu_document(
     hwnd: HWND,
     reference: Option<&str>,
@@ -86,15 +131,32 @@ pub(super) fn show_context_menu_document(
         );
         let mut point = POINT::default();
         let _ = GetCursorPos(&mut point);
+        // Mouse actions and tray callbacks can pass the primary HWND even
+        // when invoked on another surface/display. Anchor only to the bar
+        // under the cursor, never to that HWND's unrelated parent.
+        let dock =
+            taskbar_at_menu_point(&native_interop::find_taskbars(), point).and_then(|taskbar| {
+                let display_handle = MonitorFromWindow(taskbar.hwnd, MONITOR_DEFAULTTONEAREST);
+                let display = native_interop::find_monitors()
+                    .into_iter()
+                    .find(|display| display.handle == display_handle)?;
+                Some((taskbar.rect, display.rect))
+            });
+        let (point, alignment) = dock
+            .map(|(taskbar, monitor)| taskbar_menu_anchor(point, taskbar, monitor))
+            .unwrap_or((point, TPM_LEFTALIGN | TPM_TOPALIGN));
+        let exclusion = dock.map(|(taskbar, _)| TPMPARAMS {
+            cbSize: std::mem::size_of::<TPMPARAMS>() as u32,
+            rcExclude: taskbar,
+        });
         let selected = track_context_menu_with(hwnd, controller_for(hwnd), |owner| {
-            TrackPopupMenu(
+            TrackPopupMenuEx(
                 menu,
-                TPM_RIGHTBUTTON | TPM_RETURNCMD,
+                (TPM_RIGHTBUTTON | TPM_RETURNCMD | alignment).0,
                 point.x,
                 point.y,
-                None,
                 owner,
-                None,
+                exclusion.as_ref().map(|params| params as *const TPMPARAMS),
             )
             .0 as usize
         });
@@ -390,6 +452,100 @@ pub(super) fn execute_context_menu_action(
 mod tests {
     use super::*;
     use windows::Win32::UI::WindowsAndMessaging::{GetMenuItemCount, GetMenuItemID, GetSubMenu};
+
+    #[test]
+    fn menu_placement_uses_the_clicked_taskbar_and_leaves_floating_surfaces_at_the_cursor() {
+        let bars = [
+            native_interop::TaskbarWindow {
+                hwnd: HWND(11 as *mut _),
+                rect: RECT {
+                    left: 0,
+                    top: 1032,
+                    right: 1920,
+                    bottom: 1080,
+                },
+                primary: true,
+            },
+            native_interop::TaskbarWindow {
+                hwnd: HWND(22 as *mut _),
+                rect: RECT {
+                    left: 1920,
+                    top: 1032,
+                    right: 3840,
+                    bottom: 1080,
+                },
+                primary: false,
+            },
+        ];
+        assert!(
+            taskbar_at_menu_point(&bars, POINT { x: 2200, y: 800 }).is_none(),
+            "a floating secondary surface must not inherit the primary taskbar"
+        );
+        assert_eq!(
+            taskbar_at_menu_point(&bars, POINT { x: 3500, y: 1060 })
+                .unwrap()
+                .hwnd,
+            bars[1].hwnd,
+            "a secondary tray callback must use the taskbar under its cursor"
+        );
+        assert!(taskbar_at_menu_point(&bars, POINT { x: 1920, y: 1080 }).is_none());
+    }
+
+    #[test]
+    fn taskbar_menu_anchor_keeps_the_menu_outside_each_taskbar_edge() {
+        let rect = |left, top, right, bottom| RECT {
+            left,
+            top,
+            right,
+            bottom,
+        };
+        for scale in [1, 2] {
+            let monitor = rect(-1920 * scale, -1080 * scale, 0, 0);
+            for (bar, cursor, expected, alignment) in [
+                (
+                    rect(-1920, -48, 0, 0),
+                    (-600, -20),
+                    (-600, -48),
+                    TPM_BOTTOMALIGN,
+                ),
+                (
+                    rect(-1920, -1080, 0, -1032),
+                    (-600, -1060),
+                    (-600, -1032),
+                    TPM_TOPALIGN,
+                ),
+                (
+                    rect(-1920, -1080, -1872, 0),
+                    (-1900, -500),
+                    (-1872, -500),
+                    TPM_LEFTALIGN,
+                ),
+                (
+                    rect(-48, -1080, 0, 0),
+                    (-20, -500),
+                    (-48, -500),
+                    TPM_RIGHTALIGN,
+                ),
+            ] {
+                let bar = rect(
+                    bar.left * scale,
+                    bar.top * scale,
+                    bar.right * scale,
+                    bar.bottom * scale,
+                );
+                let (point, flags) = taskbar_menu_anchor(
+                    POINT {
+                        x: cursor.0 * scale,
+                        y: cursor.1 * scale,
+                    },
+                    bar,
+                    monitor,
+                );
+                assert_eq!((point.x, point.y), (expected.0 * scale, expected.1 * scale));
+                assert_eq!(flags.0 & (TPM_BOTTOMALIGN | TPM_RIGHTALIGN).0, alignment.0);
+            }
+        }
+    }
 
     #[test]
     fn docked_context_menus_use_the_apps_top_level_owner_and_restore_its_visibility() {

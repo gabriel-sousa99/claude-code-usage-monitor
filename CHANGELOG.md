@@ -4,6 +4,14 @@ Notable changes to Claude Code Usage Monitor are documented here, newest first.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), with
 changes grouped into Added, Changed, Fixed, and Removed where applicable.
 
+## [2.22.6] - 2026-10-27 (fork)
+
+### Fixed
+
+- Position docked context menus outside the taskbar instead of allowing their last rows to overlap the widget. Anchor to the workspace-facing edge and pass the full taskbar rectangle to `TrackPopupMenuEx` as an exclusion area, covering bottom, top, left, and right taskbars.
+- Select the taskbar under the cursor so secondary-monitor tray callbacks use their own display and floating-surface menus stay at the cursor outside taskbar bounds.
+- Cover all four edges, negative monitor coordinates, scaled physical bounds, floating surfaces, and secondary tray callbacks with placement regressions. Retain the context-menu focus and cleanup fixes from v2.22.5.
+
 ## [2.22.5] - 2026-10-27 (fork)
 
 ### Added
