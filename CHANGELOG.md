@@ -4,6 +4,19 @@ Notable changes to Claude Code Usage Monitor are documented here, newest first.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), with
 changes grouped into Added, Changed, Fixed, and Removed where applicable.
 
+## [2.22.5] - 2026-10-27 (fork)
+
+### Added
+
+- Synchronize the fork with upstream v2.22.4: multiple Claude Code and Codex accounts, Grok Build and GitHub Copilot, used/remaining display direction, Theme Studio Builder, additional quota pools, and taskbar lifecycle improvements.
+- Adapt Capsule and Capsule Orange to the new provider layouts while preserving the fork's default theme, Windows accent support, pt-BR fallback, credential cache, disabled update checks, and sanitized startup diagnostics.
+
+### Fixed
+
+- Keep the widget visible while Windows Quick Settings temporarily omits a live taskbar from window enumeration. Revalidate remembered hosts and prefer enumerated replacements on primary and secondary displays.
+- Restore context-menu focus after shell flyouts close. Use the monitor's top-level controller as popup owner, apply the Windows repeated-menu protocol, and restore the controller's hidden state after selection or cancellation.
+- Keep popup menus above the taskbar widget by temporarily elevating their owner, restoring its previous z-order after dismissal.
+
 ## [2.22.4] - 2026-10-25
 
 ### Fixed

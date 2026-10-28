@@ -14,6 +14,18 @@ fn track_context_menu_with(
     };
     unsafe {
         let was_visible = IsWindowVisible(owner).as_bool();
+        let was_topmost = GetWindowLongW(owner, GWL_EXSTYLE) & WS_EX_TOPMOST.0 as i32 != 0;
+        // The shell's taskbar is topmost. Its child widget must not cover the
+        // lower rows of a popup whose owner would otherwise be non-topmost.
+        let _ = SetWindowPos(
+            owner,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
         if !was_visible {
             // The controller has a zero-sized client area and TOOLWINDOW style:
             // making it eligible for activation exposes no extra UI or taskbar item.
@@ -26,6 +38,17 @@ fn track_context_menu_with(
         let _ = PostMessageW(Some(owner), WM_NULL, WPARAM(0), LPARAM(0));
         if !was_visible {
             let _ = ShowWindow(owner, SW_HIDE);
+        }
+        if !was_topmost {
+            let _ = SetWindowPos(
+                owner,
+                Some(HWND_NOTOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
         }
         selected
     }
@@ -395,17 +418,24 @@ mod tests {
             for expected_selection in [0, 1001, 0] {
                 let mut observed_owner = HWND::default();
                 let mut visible_during_tracking = false;
+                let mut topmost_during_tracking = false;
                 let selected = track_context_menu_with(surface, controller, |owner| {
                     observed_owner = owner;
                     visible_during_tracking = IsWindowVisible(owner).as_bool();
+                    topmost_during_tracking =
+                        GetWindowLongW(owner, GWL_EXSTYLE) & WS_EX_TOPMOST.0 as i32 != 0;
                     expected_selection
                 });
                 // Collect before asserting so failing regressions still release windows.
                 let top_level = GetParent(observed_owner).is_err();
                 let hidden_after = !IsWindowVisible(controller).as_bool();
+                let topmost_after =
+                    GetWindowLongW(controller, GWL_EXSTYLE) & WS_EX_TOPMOST.0 as i32 != 0;
                 if observed_owner != controller
                     || !top_level
                     || !visible_during_tracking
+                    || !topmost_during_tracking
+                    || topmost_after
                     || !hidden_after
                     || selected != expected_selection
                 {
@@ -419,6 +449,14 @@ mod tests {
                 );
                 assert!(top_level);
                 assert!(visible_during_tracking);
+                assert!(
+                    topmost_during_tracking,
+                    "the popup owner must rank above the topmost taskbar"
+                );
+                assert!(
+                    !topmost_after,
+                    "temporary menu z-order must not leak to the controller"
+                );
                 assert!(hidden_after);
                 assert_eq!(selected, expected_selection);
             }

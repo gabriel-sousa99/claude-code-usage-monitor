@@ -9,7 +9,7 @@ Widget leve para a barra de tarefas do Windows que monitora os limites de uso do
 
 ## Sobre este fork
 
-Este repositório é um fork de [CodeZeno/Claude-Code-Usage-Monitor](https://github.com/CodeZeno/Claude-Code-Usage-Monitor), sincronizado com a v2.22.4 do projeto original.
+Este repositório é um fork de [CodeZeno/Claude-Code-Usage-Monitor](https://github.com/CodeZeno/Claude-Code-Usage-Monitor), sincronizado com a v2.22.4 do projeto original. A release atual deste fork é a **v2.22.5**, que inclui as correções de visibilidade e menu de contexto na barra de tarefas.
 
 Diferenças em relação ao upstream:
 
