@@ -1,5 +1,36 @@
 use super::*;
 
+fn track_context_menu_with(
+    surface: HWND,
+    controller: HWND,
+    track: impl FnOnce(HWND) -> usize,
+) -> usize {
+    // A docked surface belongs to Explorer's window hierarchy. Use our own
+    // top-level controller to activate the app and own the native menu instead.
+    let owner = if controller.is_invalid() {
+        surface
+    } else {
+        controller
+    };
+    unsafe {
+        let was_visible = IsWindowVisible(owner).as_bool();
+        if !was_visible {
+            // The controller has a zero-sized client area and TOOLWINDOW style:
+            // making it eligible for activation exposes no extra UI or taskbar item.
+            let _ = ShowWindow(owner, SW_SHOWNOACTIVATE);
+        }
+        let _ = SetForegroundWindow(owner);
+        let selected = track(owner);
+        // Required by TrackPopupMenu's tray-menu protocol for repeated opens
+        // after another shell popup has taken and released foreground activation.
+        let _ = PostMessageW(Some(owner), WM_NULL, WPARAM(0), LPARAM(0));
+        if !was_visible {
+            let _ = ShowWindow(owner, SW_HIDE);
+        }
+        selected
+    }
+}
+
 pub(super) fn show_context_menu_document(
     hwnd: HWND,
     reference: Option<&str>,
@@ -32,17 +63,18 @@ pub(super) fn show_context_menu_document(
         );
         let mut point = POINT::default();
         let _ = GetCursorPos(&mut point);
-        let _ = SetForegroundWindow(hwnd);
-        let selected = TrackPopupMenu(
-            menu,
-            TPM_RIGHTBUTTON | TPM_RETURNCMD,
-            point.x,
-            point.y,
-            None,
-            hwnd,
-            None,
-        )
-        .0 as usize;
+        let selected = track_context_menu_with(hwnd, controller_for(hwnd), |owner| {
+            TrackPopupMenu(
+                menu,
+                TPM_RIGHTBUTTON | TPM_RETURNCMD,
+                point.x,
+                point.y,
+                None,
+                owner,
+                None,
+            )
+            .0 as usize
+        });
         let _ = DestroyMenu(menu);
         if selected >= 1_000 {
             if let Some(action) = actions.get(selected - 1_000).cloned() {
@@ -335,6 +367,66 @@ pub(super) fn execute_context_menu_action(
 mod tests {
     use super::*;
     use windows::Win32::UI::WindowsAndMessaging::{GetMenuItemCount, GetMenuItemID, GetSubMenu};
+
+    #[test]
+    fn docked_context_menus_use_the_apps_top_level_owner_and_restore_its_visibility() {
+        unsafe {
+            let class = native_interop::wide_str("STATIC");
+            let create = |style, parent| {
+                CreateWindowExW(
+                    WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                    PCWSTR(class.as_ptr()),
+                    PCWSTR::null(),
+                    style,
+                    0,
+                    0,
+                    0,
+                    0,
+                    parent,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap()
+            };
+            let shell = create(WS_POPUP, None);
+            let surface = create(WS_CHILD, Some(shell));
+            let controller = create(WS_POPUP, None);
+            for expected_selection in [0, 1001, 0] {
+                let mut observed_owner = HWND::default();
+                let mut visible_during_tracking = false;
+                let selected = track_context_menu_with(surface, controller, |owner| {
+                    observed_owner = owner;
+                    visible_during_tracking = IsWindowVisible(owner).as_bool();
+                    expected_selection
+                });
+                // Collect before asserting so failing regressions still release windows.
+                let top_level = GetParent(observed_owner).is_err();
+                let hidden_after = !IsWindowVisible(controller).as_bool();
+                if observed_owner != controller
+                    || !top_level
+                    || !visible_during_tracking
+                    || !hidden_after
+                    || selected != expected_selection
+                {
+                    let _ = DestroyWindow(surface);
+                    let _ = DestroyWindow(shell);
+                    let _ = DestroyWindow(controller);
+                }
+                assert_eq!(
+                    observed_owner, controller,
+                    "the shell-owned child must not own the native popup"
+                );
+                assert!(top_level);
+                assert!(visible_during_tracking);
+                assert!(hidden_after);
+                assert_eq!(selected, expected_selection);
+            }
+            DestroyWindow(surface).unwrap();
+            DestroyWindow(shell).unwrap();
+            DestroyWindow(controller).unwrap();
+        }
+    }
 
     #[test]
     fn conditional_native_rows_and_subtrees_preserve_action_ids_on_each_open() {
